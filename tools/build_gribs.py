@@ -642,6 +642,14 @@ TILE_SIDES = {"icon-2i": 1, "arome": 1, "youmeteo-96h": 1, "youmeteo-48h": 1,
 # così il massimo momentaneo è circa 570 più i quadratini di un modello solo.
 TILE_KEEP_RUNS = 1
 TILE_MAX_ASSETS = 1000
+# Forma leggera (dal 18/11/2026): per questi modelli (GRIB2) i quadratini col nome di sempre portano solo il vento a 10 m
+# (10u e 10v), in GRIB2 modello 5.3 (complex packing con differenze spaziali) a un decimo di m/s; tutto il resto
+# (raffiche, pressione) va nei quadratini gemelli <modello>_<corsa>_t<lato>x_<N|S><LL>_<E|W><LLL>.<ext>, stessa griglia
+# e stessa compressione. Gli altri (youmeteo GRIB1, cmems) restano come erano.
+TILE_WIND_MODELS = {"icon-2i", "arome", "icon-eu", "ecmwf-0p1", "arpege"}
+TILE_DECIMALS = 1        # precisione di un decimo (m/s per il vento e le raffiche; Pa per la pressione)
+TILE_WIND_TOL = 0.1      # scarto massimo ammesso dal file intero, nelle unità del campo
+TILES_REDO = os.environ.get("TILES_REDO", "").lower() in ("1", "true", "si", "sì")   # rifà anche le corse già pubblicate
 TILE_EPS = 1e-3          # in frazioni di maglia: un punto a meno di un millesimo di maglia da un bordo sta sul bordo
 
 
@@ -689,19 +697,64 @@ def tile_grid(h):
             "dlon": dlon, "north_first": la1 > la2, "di": ec.codes_get(h, "iDirectionIncrementInDegrees")}
 
 
-def tile_name(model, run, side, lat, lon, ext):
-    return f"{model}_{run}_t{side}_{'N' if lat >= 0 else 'S'}{abs(lat):02d}_{'E' if lon >= 0 else 'W'}{abs(lon):03d}{ext}"
+def tile_name(model, run, side, lat, lon, ext, extra=False):
+    return (f"{model}_{run}_t{side}{'x' if extra else ''}_{'N' if lat >= 0 else 'S'}{abs(lat):02d}_"
+            f"{'E' if lon >= 0 else 'W'}{abs(lon):03d}{ext}")
 
 
-def tile_file(path, out_dir):
+def is_wind_field(h):
+    """Vento a 10 m (10u o 10v) di un messaggio GRIB2."""
+    try:
+        return (ec.codes_get(h, "edition") == 2 and ec.codes_get(h, "typeOfLevel") == "heightAboveGround"
+                and ec.codes_get(h, "level") == 10 and ec.codes_get(h, "shortName") in ("10u", "10v"))
+    except Exception:
+        return False
+
+
+TILE_STATS = {"messaggi": 0, "piu_fine": 0}
+
+
+def tile_repack(msg, values, miss):
+    """Da un messaggio in compressione semplice a GRIB2 5.3 (complex packing con differenze spaziali) a un decimo.
+    L'ordine conta: prima la precisione, poi la compressione (al contrario eccodes dà campi costanti). La precisione di un
+    decimo arrotonda due volte (al decimo, poi al passo binario di 1/8 o 1/16) e nel caso peggiore lo scarto supera
+    TILE_WIND_TOL: allora si ricodifica con un decimale in più, finché lo scarto dal valore vero sta sotto la soglia."""
+    TILE_STATS["messaggi"] += 1
+    ok = ~miss
+    for dec in range(TILE_DECIMALS, TILE_DECIMALS + 3):
+        c = ec.codes_new_from_message(msg)
+        try:
+            ec.codes_set(c, "changeDecimalPrecision", dec)
+            ec.codes_set(c, "packingType", "grid_complex_spatial_differencing")
+            out = ec.codes_get_message(c)
+        finally:
+            ec.codes_release(c)
+        d = ec.codes_new_from_message(out)
+        try:
+            back = ec.codes_get_values(d).reshape(values.shape)
+        finally:
+            ec.codes_release(d)
+        err = float(np.max(np.abs(back[ok] - values[ok]))) if ok.any() else 0.0
+        if err < TILE_WIND_TOL - 5e-4:           # un po' di margine: i lettori usano float a 32 bit
+            break
+    if dec > TILE_DECIMALS:
+        TILE_STATS["piu_fine"] += 1
+    return out
+
+
+def tile_file(path, out_dir, legacy=False):
     """Taglia un file intero (<modello>_<corsa>.<ext>) in quadratini dentro out_dir.
-    Restituisce (lato, [percorsi], note): lato None vuol dire niente quadratini per quel modello."""
+    Restituisce (lato, [percorsi], note): lato None vuol dire niente quadratini per quel modello.
+    Modelli di TILE_WIND_MODELS (GRIB2): quadratini del vento (10u, 10v) in 5.3 a un decimo, più i gemelli "x" con gli altri
+    campi (raffiche, pressione) se il file intero ne ha. Gli altri modelli: tutti i campi, compressione semplice, come prima.
+    legacy=True: la forma di prima per tutti (solo per misurare quanto pesava)."""
     stem, ext = os.path.splitext(os.path.basename(path))
     model, run = stem.rsplit("_", 1)
-    tiles = {}                     # (lat, lon) -> [messaggi]
-    filled = {}                    # (lat, lon) -> almeno un punto non mancante
+    split = model in TILE_WIND_MODELS and not legacy
+    tiles = {}                     # (lat, lon, gruppo) -> [messaggi]; gruppo "w" (vento o tutto) o "x" (il resto)
+    filled = {}                    # (lat, lon) -> almeno un punto del vento (o di tutto) non mancante
     side = None
-    n_fields = 0
+    n_fields = {"w": 0, "x": 0}
     thin = set()
     with open(path, "rb") as f:
         while True:
@@ -711,13 +764,17 @@ def tile_file(path, out_dir):
             try:
                 g = tile_grid(h)
                 s_ = tile_side(g["di"], model)
-                if n_fields == 0:
+                n_all = n_fields["w"] + n_fields["x"]
+                if n_all == 0:
                     side = s_
                     if side is None:
                         return None, [], f"maglia {g['di']:g} gradi: basta il file intero"
                 elif s_ != side:
-                    raise ValueError(f"campo {n_fields + 1}: maglia diversa dal primo")
-                n_fields += 1
+                    raise ValueError(f"campo {n_all + 1}: maglia diversa dal primo")
+                if split and ec.codes_get(h, "edition") != 2:
+                    raise ValueError("forma leggera solo per GRIB2")
+                grp = "w" if (not split or is_wind_field(h)) else "x"
+                n_fields[grp] += 1
                 ni, nj = g["ni"], g["nj"]
                 vals = ec.codes_get_values(h).reshape(nj, ni)
                 if g["north_first"]:
@@ -747,23 +804,28 @@ def tile_file(path, out_dir):
                             ec.codes_set(c, "bitmapPresent", 1 if miss.any() else 0)
                             ec.codes_set(c, "bitsPerValue", bits)
                             ec.codes_set_values(c, np.where(miss, missing, sub).flatten())
-                            tiles.setdefault((lat, lon), []).append(ec.codes_get_message(c))
+                            if split and not miss.all():       # un campo tutto mancante resta in compressione semplice (eccodes non lo codifica)
+                                msg = tile_repack(ec.codes_get_message(c), np.where(miss, missing, sub), miss)
+                            else:
+                                msg = ec.codes_get_message(c)
+                            tiles.setdefault((lat, lon, grp), []).append(msg)
                         finally:
                             ec.codes_release(c)
-                        if not miss.all():
+                        if grp == "w" and not miss.all():
                             filled[(lat, lon)] = True
             finally:
                 ec.codes_release(h)
     os.makedirs(out_dir, exist_ok=True)
     paths = []
     empty = 0
-    for (lat, lon), msgs in sorted(tiles.items()):
+    for (lat, lon, grp), msgs in sorted(tiles.items()):
         if not filled.get((lat, lon)):
-            empty += 1
-            continue
-        if len(msgs) != n_fields:
-            raise ValueError(f"quadratino {lat},{lon}: {len(msgs)} campi su {n_fields}")
-        p = os.path.join(out_dir, tile_name(model, run, side, lat, lon, ext))
+            if grp == "w":
+                empty += 1
+            continue                                           # il gemello x esiste solo se esiste il quadratino del vento
+        if len(msgs) != n_fields[grp]:
+            raise ValueError(f"quadratino {lat},{lon} ({grp}): {len(msgs)} campi su {n_fields[grp]}")
+        p = os.path.join(out_dir, tile_name(model, run, side, lat, lon, ext, extra=(grp == "x")))
         with open(p, "wb") as f:
             for m in msgs:
                 f.write(m)
@@ -778,7 +840,9 @@ def tile_file(path, out_dir):
 
 def tiles_check(path):
     """Prova senza rete: taglia un file intero, rimette insieme i quadratini usando solo le coordinate scritte nei
-    quadratini (come farà l'app) e confronta i valori punto per punto con il file intero."""
+    quadratini (come farà l'app) e confronta i valori punto per punto con il file intero.
+    Forma leggera (TILE_WIND_MODELS): il quadratino del vento ha solo 10u e 10v in 5.3, il gemello x ha tutto il resto,
+    scarto massimo ammesso TILE_WIND_TOL; stesse ore del gemello e stessi campi del file intero."""
     import tempfile
     def load(fn):
         fields = []
@@ -804,74 +868,115 @@ def tiles_check(path):
                         names = ("discipline", "parameterCategory", "parameterNumber", "level", "dataDate", "dataTime", "forecastTime")
                     key = tuple(get(k) for k in names)
                     e, d = get("binaryScaleFactor"), get("decimalScaleFactor")
-                    step = 2.0 ** (e or 0) / 10.0 ** (d or 0)                     # passo della compressione semplice
-                    fields.append((key, g, v, m, step))
+                    step = 2.0 ** (e or 0) / 10.0 ** (d or 0)                     # passo della compressione
+                    fields.append({"key": key, "g": g, "v": v, "m": m, "step": step, "wind": is_wind_field(h),
+                                   "packing": get("packingType"), "tpl": get("dataRepresentationTemplateNumber"), "ed": get("edition")})
                 finally:
                     ec.codes_release(h)
         return fields
+    stem = os.path.splitext(os.path.basename(path))[0]
+    model = stem.rsplit("_", 1)[0]
     whole = load(path)
-    g0 = whole[0][1]
-    with tempfile.TemporaryDirectory() as tmp:
+    g0 = whole[0]["g"]
+    split = model in TILE_WIND_MODELS and whole[0]["ed"] == 2
+    whole_grp = {"w": [f for f in whole if f["wind"] or not split], "x": [f for f in whole if split and not f["wind"]]}
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as tmp_old:
         side, paths, note = tile_file(path, tmp)
         if side is None:
             print(f"{os.path.basename(path)}: {note}")
             return True
+        old_sizes = [os.path.getsize(p) for p in tile_file(path, tmp_old, legacy=True)[1]] if split else []
+        got = {grp: [np.full((g0["nj"], g0["ni"]), np.nan) for _ in fl] for grp, fl in whole_grp.items()}
+        gotm = {grp: [np.zeros((g0["nj"], g0["ni"]), bool) for _ in fl] for grp, fl in whole_grp.items()}
         cover = np.zeros((g0["nj"], g0["ni"]), int)
-        got = [np.full((g0["nj"], g0["ni"]), np.nan) for _ in whole]
-        gotm = [np.zeros((g0["nj"], g0["ni"]), bool) for _ in whole]
-        sizes = []
+        sizes = {"w": [], "x": []}
+        names = {"w": set(), "x": set()}
         for p in paths:
-            sizes.append(os.path.getsize(p))
+            grp = "x" if re.search(r"_t\d+x_", os.path.basename(p)) else "w"
+            assert split or grp == "w", f"{p}: quadratino x per un modello senza forma leggera"
+            sizes[grp].append(os.path.getsize(p))
+            names[grp].add(re.sub(r"_t(\d+)x?_", "_t_", os.path.basename(p)))
             part = load(p)
-            assert len(part) == len(whole), f"{p}: {len(part)} campi invece di {len(whole)}"
-            for k, (key, g, v, m, _) in enumerate(part):
-                assert key == whole[k][0], f"{p}: campo {k + 1} è {key}, nel file intero {whole[k][0]}"
+            ref = whole_grp[grp]
+            assert len(part) == len(ref), f"{p}: {len(part)} campi invece di {len(ref)}"
+            for k, pf in enumerate(part):
+                assert pf["key"] == ref[k]["key"], f"{p}: campo {k + 1} è {pf['key']}, nel file intero {ref[k]['key']}"
+                if split:
+                    assert (pf["packing"] == "grid_complex_spatial_differencing" and pf["tpl"] == 3) or pf["m"].all(), \
+                        f"{p}: non è GRIB2 5.3 ({pf['packing']})"
+                g = pf["g"]
                 j0 = int(round((g["lat_s"] - g0["lat_s"]) / g0["dlat"]))
                 i0 = int(round((g["lon_w"] - g0["lon_w"]) / g0["dlon"]))
                 assert 0 <= j0 and j0 + g["nj"] <= g0["nj"] and 0 <= i0 and i0 + g["ni"] <= g0["ni"], f"{p}: fuori dalla griglia"
-                if k == 0:
+                if k == 0 and grp == "w":
                     cover[j0:j0 + g["nj"], i0:i0 + g["ni"]] += 1
-                got[k][j0:j0 + g["nj"], i0:i0 + g["ni"]] = v
-                gotm[k][j0:j0 + g["nj"], i0:i0 + g["ni"]] = m
+                got[grp][k][j0:j0 + g["nj"], i0:i0 + g["ni"]] = pf["v"]
+                gotm[grp][k][j0:j0 + g["nj"], i0:i0 + g["ni"]] = pf["m"]
         assert cover.max() <= 1, "due quadratini hanno punti in comune"
+        if split:
+            # ogni quadratino del vento ha il suo gemello x (se il file intero ha campi oltre al vento) e viceversa
+            if whole_grp["x"]:
+                assert names["x"] == names["w"], f"gemelli: {len(names['w'])} del vento, {len(names['x'])} x, non coincidono"
+            else:
+                assert not names["x"], "quadratini x ma niente da metterci"
         holes = cover == 0
-        worst = 0.0          # differenza massima, nelle unità del campo
-        ratio = 0.0          # la stessa, in frazioni del passo della compressione del file intero
-        for k, (key, g, v, m, step) in enumerate(whole):
-            c = ~holes
-            assert np.array_equal(gotm[k][c], m[c]), f"campo {k + 1}: punti mancanti diversi"
-            ok = c & ~m
-            if ok.any():
-                d = float(np.max(np.abs(got[k][ok] - v[ok])))
-                worst = max(worst, d)
-                ratio = max(ratio, d / step)
-        lost_missing = int(sum((holes & f[3]).sum() for f in whole) // len(whole))
+        res = {}
+        for grp, fl in whole_grp.items():
+            worst = ratio = 0.0
+            for k, f in enumerate(fl):
+                c = ~holes
+                assert np.array_equal(gotm[grp][k][c], f["m"][c]), f"campo {k + 1} ({grp}): punti mancanti diversi"
+                ok = c & ~f["m"]
+                if ok.any():
+                    d = float(np.max(np.abs(got[grp][k][ok] - f["v"][ok])))
+                    worst = max(worst, d)
+                    ratio = max(ratio, d / f["step"])
+            res[grp] = (worst, ratio)
+        lost_missing = int(sum((holes & f["m"]).sum() for f in whole) // len(whole))
         lost_edge = int(holes.sum()) - lost_missing
-        print(f"{os.path.basename(path)}: lato {side} gradi, {len(paths)} quadratini, {len(whole)} campi x "
-              f"{g0['nj']}x{g0['ni']} punti; sovrapposizioni 0; differenza massima {worst:.2g} "
-              f"({ratio:.1e} del passo di compressione); "
-              f"punti non coperti {int(holes.sum())} (tutti mancanti nel file intero: {lost_missing}, bordo sottile: {lost_edge}); "
-              f"peso {min(sizes) / 1e6:.2f}-{max(sizes) / 1e6:.2f} MB, totale {sum(sizes) / 1e6:.1f} MB"
-              + (f"; {note}" if note else ""))
-        # Ogni quadratino ha il suo valore di riferimento, scritto in 32 bit: quando non è rappresentabile esatto
-        # i valori si spostano di un'unità dell'ultima cifra (circa un milionesimo per il vento), molto sotto il passo.
-        return ratio <= 1e-3
+        head = (f"{os.path.basename(path)}: lato {side} gradi, {len(names['w'])} quadratini, {len(whole)} campi x "
+                f"{g0['nj']}x{g0['ni']} punti; sovrapposizioni 0; "
+                f"punti non coperti {int(holes.sum())} (tutti mancanti nel file intero: {lost_missing}, bordo sottile: {lost_edge})")
+        if not split:
+            print(head + f"; differenza massima {res['w'][0]:.2g} ({res['w'][1]:.1e} del passo di compressione); "
+                  f"peso {min(sizes['w']) / 1e6:.2f}-{max(sizes['w']) / 1e6:.2f} MB, totale {sum(sizes['w']) / 1e6:.1f} MB"
+                  + (f"; {note}" if note else ""))
+            # Ogni quadratino ha il suo valore di riferimento, scritto in 32 bit: quando non è rappresentabile esatto
+            # i valori si spostano di un'unità dell'ultima cifra (circa un milionesimo per il vento), molto sotto il passo.
+            return res["w"][1] <= 1e-3
+        def hours(fl):
+            out = {}
+            for f in fl:
+                out[f["key"][:4]] = out.get(f["key"][:4], 0) + 1
+            return out
+        hw, hx = hours(whole_grp["w"]), hours(whole_grp["x"])
+        same_hours = all(n == next(iter(hw.values())) for n in hx.values())
+        line = (f"; PRIMA {len(old_sizes)} file, max {max(old_sizes) / 1e3:.0f} KB, totale {sum(old_sizes) / 1e6:.1f} MB"
+                f"; DOPO vento {len(sizes['w'])} file, {min(sizes['w']) / 1e3:.0f}-{max(sizes['w']) / 1e3:.0f} KB, totale {sum(sizes['w']) / 1e6:.1f} MB"
+                f", x {len(sizes['x'])} file" + (f", {min(sizes['x']) / 1e3:.0f}-{max(sizes['x']) / 1e3:.0f} KB, totale {sum(sizes['x']) / 1e6:.1f} MB" if sizes["x"] else "")
+                + f"; scarto massimo vento {res['w'][0]:.3f}" + (f", x {res['x'][0]:.3f}" if whole_grp["x"] else "")
+                + f"; ore: vento {next(iter(hw.values()))}" + (f", x {sorted(hx.values())}" + ("" if same_hours else " (come nel file intero)") if hx else "")
+                + (f"; {note}" if note else ""))
+        print(head + line)
+        return res["w"][0] <= TILE_WIND_TOL and (not whole_grp["x"] or res["x"][0] <= TILE_WIND_TOL)
 
 
 def synthetic_files(out_dir):
-    """Tre file finti per la prova senza rete: GRIB2 da nord a sud con punti mancanti e meridiano zero,
-    GRIB2 da sud a nord a 0,0625 gradi con punti esattamente sui bordi, GRIB1 a 0,055 gradi come youmeteo."""
+    """File finti per la prova senza rete: GRIB2 da nord a sud con punti mancanti, meridiano zero e raffiche (come ICON-2I),
+    GRIB2 da sud a nord a 0,0625 gradi con punti esattamente sui bordi, raffiche e pressione (come ECMWF 0,1),
+    GRIB2 solo vento (come ARPEGE), GRIB1 a 0,055 gradi come youmeteo."""
     os.makedirs(out_dir, exist_ok=True)
     rng = np.random.default_rng(7)
-    cases = [("sint-a_2026010100.grb2", "regular_ll_sfc_grib2", 39.1, 35.95, -1.3, 3.1, 0.025, 0.05, True),
-             ("sint-b_2026010100.grb2", "regular_ll_sfc_grib2", 34.0, 46.0, 5.0, 20.0, 0.0625, 0.0625, False),
-             ("sint-c_2026010100.grb", "regular_ll_sfc_grib1", 36.035, 45.99, 6.025, 16.97, 0.055, 0.055, True)]
+    cases = [("icon-2i_2026010100.grb2", "regular_ll_sfc_grib2", 39.1, 35.95, -1.3, 3.1, 0.025, 0.05, True, ("10fg",)),
+             ("ecmwf-0p1_2026010100.grb2", "regular_ll_sfc_grib2", 34.0, 46.0, 5.0, 20.0, 0.0625, 0.0625, False, ("10fg", "msl")),
+             ("arpege_2026010100.grb2", "regular_ll_sfc_grib2", 36.0, 44.0, 6.0, 15.0, 0.1, 0.1, True, ()),
+             ("sint-c_2026010100.grb", "regular_ll_sfc_grib1", 36.035, 45.99, 6.025, 16.97, 0.055, 0.055, True, ())]
     out = []
-    for name, sample, la1, la2, lo1, lo2, di, dj, holes in cases:
+    for name, sample, la1, la2, lo1, lo2, di, dj, holes, extras in cases:
         ni, nj = int(round((lo2 - lo1) / di)) + 1, int(round(abs(la2 - la1) / dj)) + 1
         with open(os.path.join(out_dir, name), "wb") as f:
             for step in (0, 3, 6):
-                for par in ("10u", "10v"):
+                for par in ("10u", "10v") + tuple(extras):
                     h = ec.codes_grib_new_from_samples(sample)
                     try:
                         ec.codes_set(h, "Ni", ni); ec.codes_set(h, "Nj", nj)
@@ -879,10 +984,15 @@ def synthetic_files(out_dir):
                         ec.codes_set(h, "latitudeOfFirstGridPointInDegrees", la1); ec.codes_set(h, "latitudeOfLastGridPointInDegrees", la2)
                         ec.codes_set(h, "longitudeOfFirstGridPointInDegrees", lo1 % 360.0); ec.codes_set(h, "longitudeOfLastGridPointInDegrees", lo2 % 360.0)
                         ec.codes_set(h, "iDirectionIncrementInDegrees", di); ec.codes_set(h, "jDirectionIncrementInDegrees", dj)
-                        ec.codes_set(h, "shortName", par); ec.codes_set(h, "typeOfLevel", "heightAboveGround"); ec.codes_set(h, "level", 10)
+                        ec.codes_set(h, "shortName", par)
+                        if par == "msl":
+                            ec.codes_set(h, "typeOfLevel", "meanSea")
+                        else:
+                            ec.codes_set(h, "typeOfLevel", "heightAboveGround"); ec.codes_set(h, "level", 10)
                         ec.codes_set(h, "stepRange", str(step))
                         ec.codes_set(h, "packingType", "grid_simple"); ec.codes_set(h, "bitsPerValue", 12)
-                        v = rng.normal(0, 8, (nj, ni))
+                        v = rng.normal(0, 8, (nj, ni)) if par in ("10u", "10v") else (
+                            rng.normal(12, 4, (nj, ni)) if par == "10fg" else 101325 + rng.normal(0, 300, (nj, ni)))
                         if holes:
                             v[: nj // 3, -ni // 4:] = 9999.0              # un angolo senza dati, come AROME
                             ec.codes_set(h, "bitmapPresent", 1); ec.codes_set(h, "missingValue", 9999.0)
@@ -916,11 +1026,12 @@ def release_assets(repo, tag):
     return assets
 
 
-TILE_RE = re.compile(r"^(?P<model>.+)_(?P<run>\d{10})_(?:t\d+_[NS]\d{2}_[EW]\d{3}\.\w+|tiles\.ok)$")
+TILE_RE = re.compile(r"^(?P<model>.+)_(?P<run>\d{10})_(?:t\d+x?_[NS]\d{2}_[EW]\d{3}\.\w+|tiles\.ok)$")
 WHOLE_RE = re.compile(r"^(?P<model>.+)_(?P<run>\d{10})\.(?P<ext>grb2?|grb)$")
 
 
-TILE_SIDE_RE = re.compile(r"_t(\d+)_[NS]\d{2}_[EW]\d{3}\.\w+$")
+TILE_SIDE_RE = re.compile(r"_t(\d+)x?_[NS]\d{2}_[EW]\d{3}\.\w+$")
+TILE_EXTRA_RE = re.compile(r"_t\d+x_[NS]\d{2}_[EW]\d{3}\.\w+$")      # il gemello con raffiche e pressione
 
 
 def publish_tiles(gribs_dir, tiles_dir):
@@ -978,7 +1089,7 @@ def publish_tiles(gribs_dir, tiles_dir):
         side_now = TILE_SIDES.get(model)
         have = runs_of(model).get(run, [])
         sides_have = {int(TILE_SIDE_RE.search(n)[1]) for n in have if TILE_SIDE_RE.search(n)}
-        if f"{model}_{run}_tiles.ok" in tiles and sides_have == {side_now}:
+        if f"{model}_{run}_tiles.ok" in tiles and sides_have == {side_now} and not TILES_REDO:
             print(f"{model} {run}: quadratini già pubblicati")
         else:
             name = runs[run]
@@ -997,26 +1108,41 @@ def publish_tiles(gribs_dir, tiles_dir):
                 print(f"ATTENZIONE: {model}: {len(tiles)} file nella release più {len(paths)} supererebbero {TILE_MAX_ASSETS}, salto", file=sys.stderr)
                 continue
             sizes = [os.path.getsize(x) for x in paths]
+            wind = [x for x in paths if not TILE_EXTRA_RE.search(x)]
+            extra = [x for x in paths if TILE_EXTRA_RE.search(x)]
             cut = time.time() - t0
             t1 = time.time()
-            r = gh("release", "upload", TILE_RELEASE, *paths, "--clobber", check=False)       # un solo comando per i quadratini
+            ok_name = f"{model}_{run}_tiles.ok"
+            if ok_name in tiles:                              # corsa già completa da rifare: finché si carica non è più completa
+                delete([ok_name])
+            r = gh("release", "upload", TILE_RELEASE, *paths, "--clobber", check=False)       # un solo comando: vento e gemelli x insieme
             if r.returncode:
                 print(f"ATTENZIONE: {model} {run}: caricamento non riuscito, niente segnaposto: {r.stderr.strip()[:300]}", file=sys.stderr)
                 continue
-            for x, sz in zip(paths, sizes):
-                tiles[os.path.basename(x)] = ("?", sz)
+            # prima del segnaposto: sono saliti tutti, con il peso giusto, i quadratini del vento e i gemelli x?
+            now = release_assets(repo, TILE_RELEASE) or {}
+            missing = [os.path.basename(x) for x in paths if os.path.basename(x) not in now or now[os.path.basename(x)][1] != os.path.getsize(x)]
+            if missing:
+                print(f"ATTENZIONE: {model} {run}: {len(missing)} file mancanti o di peso diverso nella release (per esempio {missing[0]}), niente segnaposto", file=sys.stderr)
+                tiles = now
+                continue
+            tiles = now
             peak = max(peak, len(tiles) + 1)
-            ok = os.path.join(tiles_dir, f"{model}_{run}_tiles.ok")
-            with open(ok, "w") as f:                          # prima riga il numero, poi i nomi
-                f.write(f"{len(paths)}\n" + "".join(os.path.basename(x) + "\n" for x in paths))
+            ok = os.path.join(tiles_dir, ok_name)
+            with open(ok, "w") as f:                          # come sempre: prima riga il numero, poi i nomi (dei quadratini del vento)
+                f.write(f"{len(wind)}\n" + "".join(os.path.basename(x) + "\n" for x in wind))
             r = gh("release", "upload", TILE_RELEASE, ok, "--clobber", check=False)          # per ultimo: la corsa è completa
             if r.returncode:
                 print(f"ATTENZIONE: {model} {run}: segnaposto non caricato: {r.stderr.strip()[:300]}", file=sys.stderr)
                 continue
-            print(f"{model} {run}: lato {side}, {len(paths)} quadratini, {min(sizes) / 1e6:.2f}-{max(sizes) / 1e6:.2f} MB, "
-                  f"totale {sum(sizes) / 1e6:.1f} MB; taglio {cut:.0f} s, caricamento {time.time() - t1:.0f} s" + (f" ({note})" if note else ""))
-            report.append((model, run, side, len(paths), min(sizes), max(sizes), sum(sizes), note))
-            tiles = release_assets(repo, TILE_RELEASE) or {}          # id veri dei file appena caricati
+            sw = [os.path.getsize(x) for x in wind]
+            sx = [os.path.getsize(x) for x in extra]
+            print(f"{model} {run}: lato {side}, {len(wind)} quadratini" + (f" + {len(extra)} gemelli x" if extra else "")
+                  + f", {min(sw) / 1e3:.0f}-{max(sw) / 1e3:.0f} KB (vento), totale {sum(sw) / 1e6:.1f} MB"
+                  + (f", x {sum(sx) / 1e6:.1f} MB" if extra else "")
+                  + f"; taglio {cut:.0f} s, caricamento {time.time() - t1:.0f} s" + (f" ({note})" if note else ""))
+            report.append((model, run, side, len(wind), len(extra), min(sw), max(sw), sum(sw), sum(sx), note))
+            tiles = release_assets(repo, TILE_RELEASE) or {}          # id veri dei file appena caricati e del segnaposto
         # pulizia del modello: si tiene l'ultima corsa completa, con i soli quadratini della misura di adesso
         rs = runs_of(model)
         complete = sorted((r_ for r_, names in rs.items() if f"{model}_{r_}_tiles.ok" in names), reverse=True)
@@ -1034,9 +1160,9 @@ def publish_tiles(gribs_dir, tiles_dir):
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary and report:
         with open(summary, "a") as f:
-            f.write("### Quadratini\n\n| modello | corsa | lato | quadratini | min MB | max MB | totale MB | note |\n|---|---|---|---|---|---|---|---|\n")
-            for model, run, side, n, mn, mx, tot, note in report:
-                f.write(f"| {model} | {run} | {side}° | {n} | {mn / 1e6:.2f} | {mx / 1e6:.2f} | {tot / 1e6:.1f} | {note} |\n")
+            f.write("### Quadratini\n\n| modello | corsa | lato | quadratini (vento) | gemelli x | min KB | max KB | vento MB | x MB | note |\n|---|---|---|---|---|---|---|---|---|---|\n")
+            for model, run, side, n, nx, mn, mx, tot, totx, note in report:
+                f.write(f"| {model} | {run} | {side}° | {n} | {nx} | {mn / 1e3:.0f} | {mx / 1e3:.0f} | {tot / 1e6:.1f} | {totx / 1e6:.1f} | {note} |\n")
     return 0
 
 
