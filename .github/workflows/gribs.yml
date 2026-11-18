@@ -3,7 +3,8 @@ name: Aggiorna i GRIB
 # Server di GRIB per l'app Shift: ogni tre ore scarica le ultime corse dei modelli aperti (ECMWF 0,25 e 0,1, ICON-EU,
 # ICON-2I, GFS, AROME, ARPEGE, onde ECMWF e GFS, e con le credenziali Copernicus Marine), ritaglia l'area e pubblica:
 #   - release gribs: le ultime 8 corse di ogni modello, file interi;
-#   - release tiles: l'ultima corsa dei modelli fini tagliata a quadratini di 1 o 2 gradi;
+#   - release tiles: l'ultima corsa dei modelli fini tagliata a quadratini di 1 o 2 gradi. Il vento a 10 m è nei quadratini
+#     <modello>_<corsa>_t<lato>_..., in GRIB2 5.3 a un decimo di m/s; raffiche e pressione nei gemelli ..._t<lato>x_...;
 #   - release archivio-AAAA-MM: tutte le corse del mese, non si cancella mai (serve al banco di prova).
 # Deposito pubblico: solo dati aperti, ognuno con la sua fonte e licenza (vedi README). youmeteo resta nel deposito
 # privato dell'app. L'area si cambia con la variabile GRIB_BOX (Settings, Secrets and variables, Actions, Variables),
@@ -14,6 +15,11 @@ on:
     # ogni tre ore (i minuti dei depositi pubblici sono gratuiti): le corse nuove arrivano prima
     - cron: "20 */3 * * *"
   workflow_dispatch:
+    inputs:
+      rifai_quadratini:
+        description: "Rifà i quadratini anche delle corse già pubblicate (dopo aver cambiato la forma dei quadratini)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -27,7 +33,7 @@ jobs:
   gribs:
     runs-on: ubuntu-latest
     # tetto di sicurezza: un giro normale dura pochi minuti
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       GH_TOKEN: ${{ github.token }}
       GRIB_BOX: ${{ vars.GRIB_BOX || '34,46,5,20' }}
@@ -93,6 +99,8 @@ jobs:
       # <modello>_<corsa>_tiles.ok, poi via la corsa vecchia. Si tiene l'ultima corsa completa (limite: 1.000 file).
       - name: Quadratini (release tiles)
         continue-on-error: true
+        env:
+          TILES_REDO: ${{ inputs.rifai_quadratini }}
         run: |
           python tools/build_gribs.py --tiles-check sintetico
           python tools/build_gribs.py --tiles --out gribs --tiles-out tiles
