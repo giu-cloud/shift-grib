@@ -28,5 +28,6 @@ I file sono ritagliati e, per Copernicus, convertiti da NetCDF a GRIB2. I valori
 ## Come funziona
 - `tools/build_gribs.py` scarica, ritaglia, taglia i quadratini e li pubblica. Comprende le prove senza rete: `--selftest` e `--tiles-check sintetico`.
 - `.github/workflows/gribs.yml` è il giro ogni tre ore, un giro alla volta.
+- In ogni release c'è `indice.json` (gribs: i file interi per modello, dal più recente; tiles: per modello la corsa completa, il lato e i quadratini con il loro peso). Si scarica senza credenziali e senza usare l'API: `https://github.com/giu-cloud/shift-grib/releases/download/<release>/indice.json`.
 - `.github/workflows/mantieni.yml` salva un file una volta al mese. GitHub spegne i lavori programmati dei depositi pubblici dopo 60 giorni senza attività.
 - Per Copernicus Marine servono un account gratuito e i Secrets `CMEMS_USER` e `CMEMS_PASS`. Senza, quel passo si salta.

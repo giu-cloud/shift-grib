@@ -632,7 +632,8 @@ def write(out_dir, model, run, msgs, ext="grb2"):
 #   - dentro, tutti i campi del file intero, nello stesso ordine e con la stessa compressione semplice;
 #   - non si pubblicano i quadratini con meno di 2 punti per lato o tutti mancanti (per esempio il mare fuori da AROME);
 #   - nome: <modello>_<AAAAMMGGHH>_t<lato>_<N|S><LL>_<E|W><LLL>.<ext>, e per ultimo <modello>_<AAAAMMGGHH>_tiles.ok.
-TILE_MODELS = ["icon-2i", "arome", "youmeteo-96h", "youmeteo-48h", "cmems-cur", "cmems-wav", "icon-eu", "ecmwf-0p1", "arpege"]
+# modelli a quadratini; la variabile TILE_MODELS li restringe (nel deposito privato di Shift: solo youmeteo)
+TILE_MODELS = [m for m in os.environ.get("TILE_MODELS", "icon-2i,arome,youmeteo-96h,youmeteo-48h,cmems-cur,cmems-wav,icon-eu,ecmwf-0p1,arpege").split(",") if m]
 TILE_RELEASE = "tiles"
 TILE_SIDES = {"icon-2i": 1, "arome": 1, "youmeteo-96h": 1, "youmeteo-48h": 1,
               "icon-eu": 2, "arpege": 2, "ecmwf-0p1": 2, "cmems-cur": 2, "cmems-wav": 2}
@@ -1039,6 +1040,47 @@ def publish_tiles(gribs_dir, tiles_dir):
     return 0
 
 
+def publish_index(tag):
+    """Scrive e carica <tag>/indice.json: l'elenco di ciò che la release contiene, da scaricare con un solo download
+    (https://github.com/<deposito>/releases/download/<tag>/indice.json), senza usare l'API di GitHub.
+    gribs: i file interi per modello, dal più recente. tiles: per modello la corsa completa, il lato e i quadratini."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    assets = release_assets(repo, tag)
+    if assets is None:
+        return 0
+    idx = {"deposito": repo, "release": tag, "aggiornato": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
+           "scarica": f"https://github.com/{repo}/releases/download/{tag}/<nome>", "modelli": {}}
+    if tag == TILE_RELEASE:
+        runs = {}
+        for name in assets:
+            m = TILE_RE.match(name)
+            if m:
+                runs.setdefault(m["model"], {}).setdefault(m["run"], []).append(name)
+        for model, rs in sorted(runs.items()):
+            complete = sorted((r for r, names in rs.items() if f"{model}_{r}_tiles.ok" in names), reverse=True)
+            if not complete:
+                continue
+            run = complete[0]
+            tiles = sorted(n for n in rs[run] if not n.endswith("_tiles.ok"))
+            side = TILE_SIDE_RE.search(tiles[0])[1] if tiles else None
+            idx["modelli"][model] = {"corsa": run, "lato": int(side) if side else None, "segnaposto": f"{model}_{run}_tiles.ok",
+                                     "quadratini": [{"nome": n, "byte": assets[n][1]} for n in tiles]}
+    else:
+        for name, (_, size) in assets.items():
+            m = WHOLE_RE.match(name)
+            if m:
+                idx["modelli"].setdefault(m["model"], []).append({"corsa": m["run"], "nome": name, "byte": size})
+        for v in idx["modelli"].values():
+            v.sort(key=lambda x: x["corsa"], reverse=True)
+    path = os.path.join("/tmp", f"indice-{tag}", "indice.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(idx, f, ensure_ascii=False, indent=1)
+    gh("release", "upload", tag, path, "--clobber")
+    print(f"{tag}/indice.json: {len(idx['modelli'])} modelli")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="gribs")
@@ -1048,6 +1090,7 @@ def main():
     ap.add_argument("--tiles", action="store_true", help="pubblica i quadratini delle ultime corse nella release tiles")
     ap.add_argument("--tiles-out", default="tiles")
     ap.add_argument("--tiles-check", nargs="+", metavar="FILE", help="prova senza rete: taglia e ricomponi (o 'sintetico')")
+    ap.add_argument("--index", metavar="RELEASE", help="scrive e carica l'indice.json di una release (gribs o tiles)")
     a = ap.parse_args()
     box = tuple(float(x) for x in a.box.split(","))
     if a.tiles_check:
@@ -1060,7 +1103,11 @@ def main():
         print("prova dei quadratini: " + ("riuscita" if good else "NON riuscita"))
         return 0 if good else 1
     if a.tiles:
-        return publish_tiles(a.out, a.tiles_out)
+        r = publish_tiles(a.out, a.tiles_out)
+        publish_index(TILE_RELEASE)
+        return r
+    if a.index:
+        return publish_index(a.index)
     if a.selftest:
         data = open(a.selftest, "rb").read()
         msgs = crop_bytes(data, box)

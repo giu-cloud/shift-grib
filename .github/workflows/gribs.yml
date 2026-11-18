@@ -85,6 +85,8 @@ jobs:
               gh release delete-asset gribs "$n" -y || true
             done
           done
+          # indice della release, da scaricare con un solo download senza usare l'API
+          python tools/build_gribs.py --index gribs
 
       # Quadratini: gli stessi file tagliati a riquadri fissi (1 grado per icon-2i, arome e youmeteo, 2 per icon-eu,
       # arpege, ecmwf-0p1 e cmems) nella release tiles. Un modello alla volta: quadratini, segnaposto
