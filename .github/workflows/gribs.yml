@@ -1,0 +1,96 @@
+name: Aggiorna i GRIB
+
+# Server di GRIB per l'app Shift: ogni tre ore scarica le ultime corse dei modelli aperti (ECMWF 0,25 e 0,1, ICON-EU,
+# ICON-2I, GFS, AROME, ARPEGE, onde ECMWF e GFS, e con le credenziali Copernicus Marine), ritaglia l'area e pubblica:
+#   - release gribs: le ultime 8 corse di ogni modello, file interi;
+#   - release tiles: l'ultima corsa dei modelli fini tagliata a quadratini di 1 o 2 gradi;
+#   - release archivio-AAAA-MM: tutte le corse del mese, non si cancella mai (serve al banco di prova).
+# Deposito pubblico: solo dati aperti, ognuno con la sua fonte e licenza (vedi README). youmeteo resta nel deposito
+# privato dell'app. L'area si cambia con la variabile GRIB_BOX (Settings, Secrets and variables, Actions, Variables),
+# nel formato latmin,latmax,lonmin,lonmax.
+
+on:
+  schedule:
+    # ogni tre ore (i minuti dei depositi pubblici sono gratuiti): le corse nuove arrivano prima
+    - cron: "20 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Un giro alla volta: due giri insieme caricherebbero e cancellerebbero gli stessi file.
+concurrency:
+  group: gribs
+  cancel-in-progress: false
+
+jobs:
+  gribs:
+    runs-on: ubuntu-latest
+    # tetto di sicurezza: un giro normale dura pochi minuti
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GRIB_BOX: ${{ vars.GRIB_BOX || '34,46,5,20' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Strumenti
+        run: pip install numpy requests eccodes
+
+      - name: Elenco di ciò che è già in archivio
+        run: |
+          : > have.txt
+          for r in $(gh release list --limit 200 --json tagName -q '.[].tagName' | grep '^archivio-' || true); do
+            gh release view "$r" --json assets -q '.assets[].name' >> have.txt || true
+          done
+          echo "File già in archivio: $(wc -l < have.txt)"
+
+      - name: Scarica e ritaglia (modelli liberi)
+        env:
+          GRIB_HAVE: have.txt
+        run: python tools/build_gribs.py --out gribs --models ecmwf,ecmwf-0p1,icon-eu,icon-2i,gfs,arome,arpege,ecmwf-wave,gfs-wave
+
+      # Correnti e onde del Mediterraneo da Copernicus Marine: serve un account gratuito su marine.copernicus.eu.
+      # Credenziali: Settings, Secrets and variables, Actions, Secrets: CMEMS_USER e CMEMS_PASS. Senza, il passo si salta.
+      - name: Correnti e onde del Mediterraneo (Copernicus Marine)
+        continue-on-error: true
+        env:
+          GRIB_HAVE: have.txt
+          CMEMS_USER: ${{ secrets.CMEMS_USER }}
+          CMEMS_PASS: ${{ secrets.CMEMS_PASS }}
+        run: |
+          if [ -z "$CMEMS_USER" ]; then echo "Credenziali di Copernicus Marine non impostate: salto."; exit 0; fi
+          pip install -q copernicusmarine
+          python tools/build_gribs.py --out gribs --models cmems
+
+      - name: Pubblica
+        run: |
+          ls gribs/*.grb* > /dev/null 2>&1 || { echo "Nessun file nuovo in questo giro."; exit 0; }
+          # archivio permanente: una release per mese della corsa, niente viene mai tolto
+          for f in gribs/*.grb*; do
+            n=$(basename "$f"); d=$(echo "$n" | sed -E 's/.*_([0-9]{4})([0-9]{2})[0-9]{4}\..*/\1-\2/')
+            tag="archivio-$d"
+            gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --latest=false --title "Archivio GRIB $d" --notes "Tutte le corse del mese, per il banco di prova. ECMWF: dati aperti, CC-BY-4.0. ICON-EU: dati aperti del DWD. ICON-2I: dati aperti ItaliaMeteo-Arpae (MeteoHub). GFS: dati aperti NOAA. AROME e ARPEGE: dati aperti Météo-France, Licence Ouverte 2.0. Correnti e onde del Mediterraneo: generated using E.U. Copernicus Marine Service Information."
+            gh release upload "$tag" "$f" --clobber
+          done
+          gh release view gribs > /dev/null 2>&1 || gh release create gribs --title "GRIB" --notes "File GRIB ritagliati dei modelli aperti, aggiornati ogni tre ore. Fonti e licenze nel README del deposito."
+          gh release upload gribs gribs/*.grb* --clobber
+          # si tengono le ultime 8 corse di ogni modello (servono allo storico), le più vecchie si tolgono
+          for m in ecmwf ecmwf-0p1 icon-eu icon-2i gfs arome arpege ecmwf-wave gfs-wave cmems-cur cmems-wav; do
+            gh release view gribs --json assets -q '.assets[].name' | grep "^${m}_" | sort -r | tail -n +9 | while read n; do
+              gh release delete-asset gribs "$n" -y || true
+            done
+          done
+
+      # Quadratini: gli stessi file tagliati a riquadri fissi (1 grado per icon-2i, arome e youmeteo, 2 per icon-eu,
+      # arpege, ecmwf-0p1 e cmems) nella release tiles. Un modello alla volta: quadratini, segnaposto
+      # <modello>_<corsa>_tiles.ok, poi via la corsa vecchia. Si tiene l'ultima corsa completa (limite: 1.000 file).
+      - name: Quadratini (release tiles)
+        continue-on-error: true
+        run: |
+          python tools/build_gribs.py --tiles-check sintetico
+          python tools/build_gribs.py --tiles --out gribs --tiles-out tiles
