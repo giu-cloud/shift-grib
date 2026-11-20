@@ -641,7 +641,7 @@ TILE_SIDES = {"icon-2i": 1, "arome": 1, "youmeteo-96h": 1, "youmeteo-48h": 1,
 # ne tiene al massimo 1.000. Si lavora un modello alla volta (quadratini, segnaposto, poi via la corsa vecchia),
 # così il massimo momentaneo è circa 570 più i quadratini di un modello solo.
 TILE_KEEP_RUNS = 1
-TILE_MAX_ASSETS = 1000
+TILE_MAX_ASSETS = int(os.environ.get("TILE_MAX_ASSETS", "1000"))      # limite di GitHub per release (la variabile serve alle prove)
 # Forma leggera (dal 18/11/2026): per questi modelli (GRIB2) i quadratini col nome di sempre portano solo il vento a 10 m
 # (10u e 10v), in GRIB2 modello 5.3 (complex packing con differenze spaziali) a un decimo di m/s; tutto il resto
 # (raffiche, pressione) va nei quadratini gemelli <modello>_<corsa>_t<lato>x_<N|S><LL>_<E|W><LLL>.<ext>, stessa griglia
@@ -1105,8 +1105,17 @@ def publish_tiles(gribs_dir, tiles_dir):
                 print(f"{model} {run}: {note}")
                 continue
             if len(tiles) + len(paths) + 1 > TILE_MAX_ASSETS:
-                print(f"ATTENZIONE: {model}: {len(tiles)} file nella release più {len(paths)} supererebbero {TILE_MAX_ASSETS}, salto", file=sys.stderr)
-                continue
+                # Non c'è posto per la corsa nuova accanto alla vecchia dello stesso modello (succede nel deposito privato, che
+                # tiene anche youmeteo e le correnti): si toglie prima la corsa vecchia, segnaposto per primo. Fino al
+                # segnaposto nuovo (circa un minuto) il modello non ha una corsa completa: l'app usa i file interi.
+                ro = runs_of(model)
+                gone = [n for r_, names in ro.items() if r_ != run for n in sorted(names, key=lambda x: not x.endswith("_tiles.ok"))]
+                if gone and len(tiles) - len(gone) + len(paths) + 1 <= TILE_MAX_ASSETS:
+                    print(f"{model}: {len(tiles)} file nella release più {len(paths)} supererebbero {TILE_MAX_ASSETS}: tolgo prima i {len(gone)} della corsa vecchia")
+                    delete(gone)
+                else:
+                    print(f"ATTENZIONE: {model}: {len(tiles)} file nella release più {len(paths)} supererebbero {TILE_MAX_ASSETS}, salto", file=sys.stderr)
+                    continue
             sizes = [os.path.getsize(x) for x in paths]
             wind = [x for x in paths if not TILE_EXTRA_RE.search(x)]
             extra = [x for x in paths if TILE_EXTRA_RE.search(x)]
