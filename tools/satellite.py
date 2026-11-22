@@ -20,6 +20,9 @@ Licenza dei dati: CC BY 4.0, EUMETSAT OSI SAF ("copyright (anno) EUMETSAT").
 Uso:
   python tools/satellite.py --out sat --index indice.json [--hours 30] [--probe]
   python tools/satellite.py --merge-index indice.json sat/nuovi.json indice_nuovo.json <giorni>
+  python tools/satellite.py --backfill AAAA-MM-GG AAAA-MM-GG --out sat [--have nomi.txt]
+--backfill recupera dall'archivio della KNMI Data Platform (che tiene gli anni passati) le orbite con inizio nei giorni
+indicati, inclusi; nomi.txt elenca i passaggi già in archivio, da non riscrivere. Serve al banco di prova.
 indice.json è quello della release (se c'è): i file sorgente già visti non si riscaricano, e si guardano solo i file
 creati dopo l'ultimo giro (con un'ora di margine, al massimo [hours] ore). --probe stampa gli attributi del primo file.
 """
@@ -279,6 +282,52 @@ def main():
     print(f"{len(new)} passaggi nuovi")
 
 
+def backfill(day_from, day_to, out, have_path):
+    os.makedirs(out, exist_ok=True)
+    have = set(open(have_path).read().split()) if have_path and os.path.exists(have_path) else set()
+    d0, d1 = dt.date.fromisoformat(day_from), dt.date.fromisoformat(day_to)
+    new = []
+    for sat, (dataset, version, code, short) in SOURCES.items():
+        names, token = [], None
+        for _ in range(40):
+            p = {"orderBy": "filename", "sorting": "asc", "maxKeys": 100, "begin": f"ascat_{d0:%Y%m%d}"}
+            if token:
+                p["nextPageToken"] = token
+            j = kdp(f"/datasets/{dataset}/versions/{version}/files", **p)
+            files = j.get("files", [])
+            stop = False
+            for f in files:
+                m = FNAME.search(f["filename"])
+                if not m:
+                    continue
+                d = dt.datetime.strptime(m[1], "%Y%m%d").date()
+                if d > d1:
+                    stop = True
+                    break
+                if d >= d0:
+                    names.append(f["filename"])
+            token = j.get("nextPageToken")
+            if stop or not token or not files:
+                break
+        print(f"{sat}: {len(names)} orbite dal {d0} al {d1}")
+        for fname in names:
+            try:
+                got = read_pass(download(dataset, version, fname), code)
+            except Exception as e:
+                print(f"  {fname}: non letto ({e})", file=sys.stderr)
+                continue
+            if got is None:
+                continue
+            rec, t0, t1, toward = got
+            name = f"scat_{sat}_{t0:%Y%m%d%H%M}.scw.gz"
+            if name in have:
+                continue
+            write_scw(os.path.join(out, name), rec)
+            new.append(name)
+            print(f"  {name}: {len(rec['minutes'])} celle")
+    print(f"{len(new)} passaggi recuperati")
+
+
 def merge_index(old_path, new_path, out_path, keep_days):
     """indice.json della release: i passaggi vecchi ancora tenuti più quelli nuovi, dal più recente."""
     old = json.load(open(old_path)) if old_path and os.path.exists(old_path) else {"passes": [], "seen": []}
@@ -304,5 +353,12 @@ def merge_index(old_path, new_path, out_path, keep_days):
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--merge-index":
         merge_index(sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5]))
+    elif len(sys.argv) > 1 and sys.argv[1] == "--backfill":
+        b = argparse.ArgumentParser()
+        b.add_argument("--backfill", nargs=2)
+        b.add_argument("--out", default="sat")
+        b.add_argument("--have", default="")
+        x = b.parse_args()
+        backfill(x.backfill[0], x.backfill[1], x.out, x.have)
     else:
         main()
