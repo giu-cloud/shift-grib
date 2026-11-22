@@ -282,11 +282,53 @@ def main():
     print(f"{len(new)} passaggi nuovi")
 
 
+def podaac_range(short, d0, d1):
+    """Le orbite PO.DAAC che cominciano tra i giorni d0 e d1 inclusi: (nome, link)."""
+    out, page = [], 1
+    while page < 20:
+        r = requests.get(CMR, params={"short_name": short, "sort_key": "start_date", "page_size": 200, "page_num": page,
+                                      "temporal": f"{d0:%Y-%m-%d}T00:00:00Z,{d1:%Y-%m-%d}T23:59:59Z"}, timeout=60)
+        r.raise_for_status()
+        es = r.json()["feed"]["entry"]
+        for g in es:
+            links = [l["href"] for l in g.get("links", []) if l["href"].startswith("https") and l["href"].endswith((".nc", ".nc.gz"))]
+            if links:
+                out.append((links[0].rsplit("/", 1)[-1], links[0]))
+        if len(es) < 200:
+            break
+        page += 1
+    return out
+
+
 def backfill(day_from, day_to, out, have_path):
     os.makedirs(out, exist_ok=True)
     have = set(open(have_path).read().split()) if have_path and os.path.exists(have_path) else set()
     d0, d1 = dt.date.fromisoformat(day_from), dt.date.fromisoformat(day_to)
     new = []
+    if earthdata():
+        # PO.DAAC: più svelto del KNMI (niente limiti condivisi della chiave anonima)
+        for sat, (dataset, version, code, short) in SOURCES.items():
+            files = podaac_range(short, d0, d1)
+            print(f"{sat}: {len(files)} orbite PO.DAAC dal {d0} al {d1}")
+            for fname, url in files:
+                if not FNAME.search(fname):
+                    continue
+                try:
+                    got = read_pass(podaac_download(url), code)
+                except Exception as e:
+                    print(f"  {fname}: non letto ({e})", file=sys.stderr)
+                    continue
+                if got is None:
+                    continue
+                rec, t0, t1, toward = got
+                name = f"scat_{sat}_{t0:%Y%m%d%H%M}.scw.gz"
+                if name in have or name in new:
+                    continue
+                write_scw(os.path.join(out, name), rec)
+                new.append(name)
+                print(f"  {name}: {len(rec['minutes'])} celle")
+        print(f"{len(new)} passaggi recuperati")
+        return
     for sat, (dataset, version, code, short) in SOURCES.items():
         names, token = [], None
         for _ in range(40):

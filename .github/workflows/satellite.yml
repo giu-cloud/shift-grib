@@ -57,7 +57,6 @@ jobs:
         run: pip install numpy requests netCDF4
 
       - name: Account Earthdata (se ci sono i segreti)
-        if: inputs.recupera_da == ''
         env:
           EARTHDATA_USER: ${{ secrets.EARTHDATA_USER }}
           EARTHDATA_PASS: ${{ secrets.EARTHDATA_PASS }}
