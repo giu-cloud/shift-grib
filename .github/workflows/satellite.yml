@@ -47,7 +47,7 @@ jobs:
         run: pip install numpy requests netCDF4
 
       - name: Indice attuale
-        run: gh release download satellite -p indice.json -D . || echo "nessun indice: primo giro"
+        run: gh release download satellite -p indice.json -D . || echo "nessun indice, primo giro"
 
       - name: Passaggi nuovi
         run: python tools/satellite.py --out sat --index indice.json ${{ (github.event_name == 'push' || inputs.prova) && '--probe' || '' }}
