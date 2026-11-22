@@ -1,12 +1,13 @@
 name: Vento dal satellite
 
 # Ogni tre ore: i passaggi dei diffusometri ASCAT (Metop-B e Metop-C, prodotto costiero a 12,5 km di EUMETSAT OSI SAF,
-# fatto dal KNMI) che toccano il Mediterraneo, presi dalla KNMI Data Platform e scritti nel formato SCW1 per l'app
-# (descritto in tools/satellite.py):
+# fatto dal KNMI) che toccano il Mediterraneo, scritti nel formato SCW1 per l'app (descritto in tools/satellite.py).
+# Fonti: NASA PO.DAAC, in rete 1,5-2,5 ore dopo l'orbita, con un account Earthdata gratuito (segreti EARTHDATA_USER e
+# EARTHDATA_PASS); KNMI Data Platform, caricata una volta al giorno, per l'archivio e per i buchi. Release:
 #   - release satellite: i passaggi degli ultimi 3 giorni e indice.json;
 #   - release archivio-satellite-AAAA-MM: tutti i passaggi del mese, per il banco di prova. Non si cancella mai.
-# Chiave: il segreto KNMI_API_KEY (chiave personale gratuita della KNMI Data Platform). Senza, si usa la chiave anonima
-# pubblicata dal KNMI per i client pubblici, con limiti condivisi. L'area si cambia con la variabile SAT_BOX.
+# KNMI: il segreto KNMI_API_KEY (chiave personale gratuita); senza, la chiave anonima pubblicata dal KNMI per i client
+# pubblici, con limiti condivisi. Senza account Earthdata resta solo il KNMI. L'area si cambia con la variabile SAT_BOX.
 
 on:
   schedule:
@@ -45,6 +46,19 @@ jobs:
 
       - name: Strumenti
         run: pip install numpy requests netCDF4
+
+      - name: Account Earthdata (se ci sono i segreti)
+        env:
+          EARTHDATA_USER: ${{ secrets.EARTHDATA_USER }}
+          EARTHDATA_PASS: ${{ secrets.EARTHDATA_PASS }}
+        run: |
+          if [ -n "$EARTHDATA_USER" ]; then
+            printf 'machine urs.earthdata.nasa.gov login %s password %s\n' "$EARTHDATA_USER" "$EARTHDATA_PASS" > ~/.netrc
+            chmod 600 ~/.netrc
+            echo "account Earthdata presente"
+          else
+            echo "nessun account Earthdata: solo KNMI"
+          fi
 
       - name: Prova delle altre fonti (solo sul ramo di prova)
         if: github.event_name == 'push'

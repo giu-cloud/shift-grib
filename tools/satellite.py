@@ -1,8 +1,12 @@
 """Vento dal satellite sul Mediterraneo per l'app Shift e per il banco di prova.
 
-Fonte: ASCAT costiero a 12,5 km su Metop-B e Metop-C (EUMETSAT OSI SAF, prodotto KNMI), dalla KNMI Data Platform
-(Open Data API). Chiave: il segreto KNMI_API_KEY se c'è (chiave personale, gratuita), altrimenti la chiave anonima
-pubblicata da KNMI per i client pubblici (limiti condivisi, scade ogni anno).
+Fonte: ASCAT costiero a 12,5 km su Metop-B e Metop-C (EUMETSAT OSI SAF, prodotto KNMI), da due posti:
+- NASA PO.DAAC: in rete circa 1,5-2,5 ore dopo la fine dell'orbita. Serve un account Earthdata gratuito (segreti
+  EARTHDATA_USER e EARTHDATA_PASS, scritti nel ~/.netrc dal lavoro); senza, questa fonte si salta;
+- KNMI Data Platform (Open Data API): lo stesso prodotto, ma caricato una volta al giorno (verso le 04 UTC): serve per
+  l'archivio e per riempire i buchi. Chiave: il segreto KNMI_API_KEY se c'è (chiave personale, gratuita), altrimenti
+  la chiave anonima pubblicata dal KNMI per i client pubblici (limiti condivisi, scade ogni anno).
+Lo stesso passaggio da due fonti dà lo stesso nome e si scrive una volta sola.
 
 Per ogni passaggio che tocca il riquadro scrive scat_<satellite>_<AAAAMMGGHHMM>.scw.gz, un gzip di:
   "SCW1" (4 byte), numero di record (int32 little endian), poi per ogni record:
@@ -29,9 +33,10 @@ API = "https://api.dataplatform.knmi.nl/open-data/v1"
 ANON_KEY = "eyJvcmciOiI1ZTU1NGUxOTI3NGE5NjAwMDEyYTNlYjEiLCJpZCI6IjUzYTg1ZDBhMmQ5YzRkYzJiYWNlNzQ4NTQ2Zjk4ODExIiwiaCI6Im11cm11cjEyOCJ9"
 # nome del satellite nel file -> (dataset KDP, versione, codice nel formato SCW1)
 SOURCES = {
-    "metopb": ("osisaf_ascat_b_coa", "nrt", 1),
-    "metopc": ("osisaf_ascat_c_coa", "nrt", 2),
+    "metopb": ("osisaf_ascat_b_coa", "nrt", 1, "ASCATB-L2-Coastal"),
+    "metopc": ("osisaf_ascat_c_coa", "nrt", 2, "ASCATC-L2-Coastal"),
 }
+CMR = "https://cmr.earthdata.nasa.gov/search/granules.json"
 BOX = tuple(float(x) for x in os.environ.get("SAT_BOX", "30,46.5,-6,37").split(","))  # latmin, latmax, lonmin, lonmax
 EPOCH_SCW = dt.datetime(2020, 1, 1, tzinfo=dt.timezone.utc)
 EPOCH_NC = dt.datetime(1990, 1, 1, tzinfo=dt.timezone.utc)
@@ -79,6 +84,43 @@ def recent_files(dataset, version, hours):
         if not token or not files:
             break
     return out
+
+
+def podaac_files(short, hours):
+    """Le orbite PO.DAAC finite nelle ultime [hours] ore: (nome, link, ora in cui sono comparse)."""
+    now = dt.datetime.now(dt.timezone.utc)
+    r = requests.get(CMR, params={"short_name": short, "sort_key": "-start_date", "page_size": 40,
+                                  "temporal": f"{now - dt.timedelta(hours=hours):%Y-%m-%dT%H:%M:%SZ},"}, timeout=60)
+    r.raise_for_status()
+    out = []
+    for g in r.json()["feed"]["entry"]:
+        links = [l["href"] for l in g.get("links", []) if l["href"].startswith("https") and l["href"].endswith((".nc", ".nc.gz"))]
+        if links:
+            out.append((links[0].rsplit("/", 1)[-1], links[0], dt.datetime.fromisoformat(g["updated"].replace("Z", "+00:00"))))
+    return out
+
+
+_EDL = None
+
+
+def podaac_download(url):
+    """Scarica da PO.DAAC con l'account Earthdata del ~/.netrc (requests lo usa da sé sul rimando a urs.earthdata)."""
+    global _EDL
+    if _EDL is None:
+        _EDL = requests.Session()
+    for attempt in range(4):
+        r = _EDL.get(url, timeout=300)
+        if r.ok and r.content[:4] in (b"CDF\x01", b"CDF\x02", b"\x89HDF") or (r.ok and r.content[:2] == b"\x1f\x8b"):
+            return r.content
+        if r.status_code in (401, 403) or (r.ok and b"<html" in r.content[:500].lower()):
+            raise RuntimeError(f"Earthdata: accesso non riuscito (HTTP {r.status_code}), controllare utente e password")
+        time.sleep(15 * (attempt + 1))
+    raise RuntimeError(f"PO.DAAC: HTTP {r.status_code}")
+
+
+def earthdata():
+    netrc = os.path.expanduser("~/.netrc")
+    return os.path.exists(netrc) and "urs.earthdata.nasa.gov" in open(netrc).read()
 
 
 def download(dataset, version, filename):
@@ -175,36 +217,49 @@ def main():
     hours = a.hours
     if idx.get("updated"):
         last = dt.datetime.strptime(idx["updated"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=dt.timezone.utc)
-        hours = min(a.hours, (now - last).total_seconds() / 3600 + 1.0)
+        hours = min(a.hours, max(6.0, (now - last).total_seconds() / 3600 + 1.0))
     new, seen, summary = [], [], []
-    for sat, (dataset, version, code) in SOURCES.items():
-        try:
-            files = recent_files(dataset, version, hours)
-        except Exception as e:
-            print(f"{sat}: elenco non riuscito ({e})", file=sys.stderr)
-            summary.append(f"| {sat} | elenco non riuscito: {e} | | |")
-            continue
-        print(f"{sat}: {len(files)} file creati nelle ultime {hours:.1f} ore ({dataset}/{version})")
-        probed = False
-        for f in files:
-            m = FNAME.search(f["filename"])
-            if not m or f["filename"] in seen_before:
-                continue
-            created = dt.datetime.fromisoformat(f["created"].replace("Z", "+00:00"))
+    edl = earthdata()
+    if not edl:
+        print("PO.DAAC saltato: nessun account Earthdata nel ~/.netrc (segreti EARTHDATA_USER e EARTHDATA_PASS)")
+    for sat, (dataset, version, code, short) in SOURCES.items():
+        cand = []  # (nome sorgente, fonte, come scaricarlo, ora di comparsa)
+        if edl:
             try:
-                data = download(dataset, version, f["filename"])
+                pf = podaac_files(short, 30.0)
+                print(f"{sat}: {len(pf)} orbite PO.DAAC finite nelle ultime 30 ore ({short})")
+                cand += [(n, "podaac", u, c) for n, u, c in pf]
+            except Exception as e:
+                print(f"{sat}: ricerca PO.DAAC non riuscita ({e})", file=sys.stderr)
+        try:
+            kf = recent_files(dataset, version, hours)
+            print(f"{sat}: {len(kf)} file KNMI creati nelle ultime {hours:.1f} ore ({dataset}/{version})")
+            cand += [(f["filename"], "knmi", f["filename"], dt.datetime.fromisoformat(f["created"].replace("Z", "+00:00"))) for f in kf]
+        except Exception as e:
+            print(f"{sat}: elenco KNMI non riuscito ({e})", file=sys.stderr)
+            summary.append(f"| {sat} | elenco KNMI non riuscito: {e} | | |")
+        probed = False
+        done_here = set()
+        for fname, src, how, created in cand:
+            m = FNAME.search(fname)
+            base = re.sub(r"\.gz$", "", fname)
+            if not m or base in seen_before or base in done_here:
+                continue
+            try:
+                data = podaac_download(how) if src == "podaac" else download(dataset, version, how)
                 got = read_pass(data, code, probe=a.probe and not probed)
                 probed = True
             except Exception as e:
-                print(f"  {f['filename']}: non letto ({e})", file=sys.stderr)
+                print(f"  {fname} ({src}): non letto ({e})", file=sys.stderr)
                 continue
-            seen.append(f["filename"])
+            done_here.add(base)
+            seen.append(base)
             if got is None:
                 continue
             rec, t0, t1, toward = got
             name = f"scat_{sat}_{t0:%Y%m%d%H%M}.scw.gz"
             late = (created - t1).total_seconds() / 60
-            summary.append(f"| {name} | {t0:%d/%m %H:%M}-{t1:%H:%M} | {len(rec['minutes'])} | {late:.0f} min |")
+            summary.append(f"| {name} | {t0:%d/%m %H:%M}-{t1:%H:%M} | {len(rec['minutes'])} | {late:.0f} min ({src}) |")
             if name in have:
                 continue
             path = os.path.join(a.out, name)
@@ -212,9 +267,9 @@ def main():
             new.append(dict(file=name, satellite=sat, start=t0.strftime("%Y-%m-%dT%H:%MZ"), end=t1.strftime("%Y-%m-%dT%H:%MZ"),
                             box=[round(float(rec["lat"].min()) / 500, 2), round(float(rec["lat"].max()) / 500, 2),
                                  round(float(rec["lon"].min()) / 500, 2), round(float(rec["lon"].max()) / 500, 2)],
-                            cells=int(len(rec["minutes"])), source=f["filename"], published=now.strftime("%Y-%m-%dT%H:%MZ"),
+                            cells=int(len(rec["minutes"])), source=fname, origin=src, published=now.strftime("%Y-%m-%dT%H:%MZ"),
                             delay_min=int(late), toward=toward))
-            print(f"  {name}: {len(rec['minutes'])} celle, {os.path.getsize(path) / 1024:.0f} KB, pronto {late:.0f} min dopo la fine del passaggio")
+            print(f"  {name}: {len(rec['minutes'])} celle, {os.path.getsize(path) / 1024:.0f} KB, in rete {late:.0f} min dopo la fine del passaggio ({src})")
     with open(os.path.join(a.out, "nuovi.json"), "w") as f:
         json.dump({"passes": new, "seen": seen}, f, indent=1)
     s = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -238,7 +293,7 @@ def merge_index(old_path, new_path, out_path, keep_days):
     def recent(name):
         m = FNAME.search(name)
         return bool(m) and dt.datetime.strptime(m[1] + m[2], "%Y%m%d%H%M%S").replace(tzinfo=dt.timezone.utc) >= now - dt.timedelta(days=2)
-    seen = sorted({n for n in old.get("seen", []) + new["seen"] if recent(n)})
+    seen = sorted({re.sub(r"\.gz$", "", n) for n in old.get("seen", []) + new["seen"] if recent(n)})
     json.dump({"format": "SCW1", "updated": now.strftime("%Y-%m-%dT%H:%MZ"), "box": list(BOX),
                "credit": "EUMETSAT OSI SAF, CC BY 4.0", "passes": passes, "seen": seen}, open(out_path, "w"), indent=1)
     for p in old.get("passes", []):
