@@ -12,6 +12,7 @@ I dati sono quelli dei centri che li producono, ritagliati e convertiti, **senza
   - Una corsa è completa quando c'è il segnaposto `<modello>_<AAAAMMGGHH>_tiles.ok`. La prima riga dice quanti sono i quadratini, le righe seguenti li elencano per nome.
   - Ogni quadratino contiene tutti i campi del file intero.
 - **`archivio-AAAA-MM`**: tutte le corse del mese. Non si cancella mai e serve al banco di prova.
+- **`archivio-ovest-AAAA-MM`** (dal 22/11/2026): le stesse corse di ECMWF 0,25 e 0,1, ICON-EU, GFS, AROME e ARPEGE ritagliate sul Mediterraneo occidentale (36-44,5 N, 2 W-10 E: Barcellona, Valencia, Baleari), con nomi `<modello>-ovest_<corsa>.grb2`. Solo per il banco di prova: non sono in `gribs` né in `tiles`. L'area si cambia con la variabile `GRIB_EXTRA`.
 
 ## Modelli, fonti e licenze
 | file | modello | fonte | licenza |

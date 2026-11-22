@@ -52,6 +52,25 @@ import eccodes as ec
 
 UA = {"User-Agent": "shift-gribs/1 (personal, non-commercial)"}
 
+# Aree in più, solo per l'archivio del banco di prova (22/11/2026: Mediterraneo occidentale per Palermo-Barcellona e
+# Palermo-Valencia). Si ritagliano dagli stessi dati già scaricati per l'area principale, quindi senza scaricare di più.
+# GRIB_EXTRA: "nome=latmin,latmax,lonmin,lonmax;nome2=..."; i file si chiamano <modello>-<nome>_<corsa>.grb2, finiscono
+# nella cartella GRIB_EXTRA_OUT e il workflow li carica solo nella release archivio-<nome>-AAAA-MM: niente gribs, niente
+# quadratini, l'app non li vede.
+def _parse_extra(text):
+    out = []
+    for part in (text or "").split(";"):
+        if "=" in part:
+            name, b = part.split("=", 1)
+            out.append((name.strip(), tuple(float(x) for x in b.split(","))))
+    return out
+
+
+EXTRA = _parse_extra(os.environ.get("GRIB_EXTRA", ""))
+EXTRA_MODELS = {m.strip() for m in os.environ.get("GRIB_EXTRA_MODELS", "ecmwf,ecmwf-0p1,icon-eu,gfs,arome,arpege").split(",") if m.strip()}
+EXTRA_OUT = os.environ.get("GRIB_EXTRA_OUT", "extra")
+_extra = {"on": False, "msgs": {}}
+
 
 def http_get(url, headers=None, tries=3, timeout=120):
     import requests
@@ -125,6 +144,11 @@ def crop_bytes(data, box, keep=None):
             m = crop_message(h, box)
             if m:
                 out.append(m)
+            if _extra["on"]:
+                for name, eb in EXTRA:
+                    em = crop_message(h, eb)
+                    if em:
+                        _extra["msgs"].setdefault(name, []).append(em)
         finally:
             ec.codes_release(h)
         pos = i + max(int(n), 4)
@@ -182,9 +206,13 @@ def have():
 
 
 def missing_runs(model, runs, ext="grb2"):
-    """Le corse da costruire: quelle non ancora in archivio. Se sono tutte in archivio, nessuna."""
+    """Le corse da costruire: quelle non ancora in archivio. Se sono tutte in archivio, nessuna. Se manca solo il file di
+    un'area in più, si rifà soltanto la corsa più recente (le corse arrivano dalla più recente): così il primo giro dopo
+    aver aggiunto un'area non riscarica tutte le corse vecchie."""
     got = have()
-    todo = [r for r in runs if f"{model}_{r:%Y%m%d%H}.{ext}" not in got]
+    names = [n for n, _ in EXTRA] if model in EXTRA_MODELS else []
+    todo = [r for k, r in enumerate(runs) if f"{model}_{r:%Y%m%d%H}.{ext}" not in got
+            or (k == 0 and any(f"{model}-{n}_{r:%Y%m%d%H}.{ext}" not in got for n in names))]
     for r in runs:
         if r not in todo:
             print(f"{model}: corsa {r:%Y-%m-%d %H}Z già in archivio")
@@ -197,11 +225,16 @@ def build_all(model, runs, one):
         raise IOError(f"nessuna corsa {model} trovata")
     made, errors = [], []
     for run in missing_runs(model, runs):
+        _extra["on"] = bool(EXTRA) and model in EXTRA_MODELS
+        _extra["msgs"] = {}
         try:
             made.append(one(run))
         except Exception as e:
             errors.append(f"{run:%Y-%m-%d %H}Z: {e}")
             print(f"ATTENZIONE: {model} corsa {run:%Y-%m-%d %H}Z non riuscita: {e}", file=sys.stderr)
+        finally:
+            _extra["on"] = False
+            _extra["msgs"] = {}
     if errors and not made:
         raise IOError("; ".join(errors))
     return made
@@ -619,6 +652,17 @@ def write(out_dir, model, run, msgs, ext="grb2"):
         for m in msgs:
             f.write(m)
     print(f"{model}: corsa {run:%Y-%m-%d %H}Z, {len(msgs)} campi, {os.path.getsize(path) / 1e6:.1f} MB -> {path}")
+    if _extra["on"]:
+        for name, ems in _extra["msgs"].items():
+            if not ems:
+                continue
+            os.makedirs(EXTRA_OUT, exist_ok=True)
+            ep = os.path.join(EXTRA_OUT, f"{model}-{name}_{run:%Y%m%d%H}.{ext}")
+            with open(ep, "wb") as f:
+                for m in ems:
+                    f.write(m)
+            print(f"{model}-{name}: corsa {run:%Y-%m-%d %H}Z, {len(ems)} campi, {os.path.getsize(ep) / 1e6:.1f} MB -> {ep}")
+        _extra["msgs"] = {}
     return path
 
 
