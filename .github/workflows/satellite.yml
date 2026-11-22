@@ -46,6 +46,10 @@ jobs:
       - name: Strumenti
         run: pip install numpy requests netCDF4
 
+      - name: Prova delle altre fonti (solo sul ramo di prova)
+        if: github.event_name == 'push'
+        run: python tools/satellite_probe.py || true
+
       - name: Indice attuale
         run: gh release download satellite -p indice.json -D . || echo "nessun indice, primo giro"
 
