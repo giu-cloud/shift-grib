@@ -14,6 +14,9 @@ I dati sono quelli dei centri che li producono, ritagliati e convertiti, **senza
 - **`archivio-AAAA-MM`**: tutte le corse del mese. Non si cancella mai e serve al banco di prova.
 - **`archivio-ovest-AAAA-MM`** (dal 22/11/2026): le stesse corse di ECMWF 0,25 e 0,1, ICON-EU, GFS, AROME e ARPEGE ritagliate sul Mediterraneo occidentale (36-44,5 N, 2 W-10 E: Barcellona, Valencia, Baleari), con nomi `<modello>-ovest_<corsa>.grb2`. Solo per il banco di prova: non sono in `gribs` né in `tiles`. L'area si cambia con la variabile `GRIB_EXTRA`.
 
+- **`satellite`** (dal 22/11/2026): il vento misurato dai satelliti nelle ultime 72 ore, un file per passaggio `scat_<satellite>_<AAAAMMGGHHMM>.scw.gz` (formato SCW1, descritto in `tools/satellite.py`), con `indice.json`. Si aggiorna ogni tre ore con il lavoro "Vento dal satellite".
+- **`archivio-satellite-AAAA-MM`**: tutti i passaggi del mese, per il banco di prova. Non si cancella mai.
+
 ## Modelli, fonti e licenze
 | file | modello | fonte | licenza |
 |---|---|---|---|
@@ -23,6 +26,7 @@ I dati sono quelli dei centri che li producono, ritagliati e convertiti, **senza
 | `gfs`, `gfs-wave` | GFS e WAVEWATCH III | NOAA / NCEP | dominio pubblico (dati del governo USA) |
 | `arome`, `arpege` | AROME 0,025° e ARPEGE 0,1° | Météo-France, data.gouv.fr | Licence Ouverte / Open Licence 2.0 Etalab |
 | `cmems-cur`, `cmems-wav` | correnti e onde del Mediterraneo, 1/24° | Copernicus Marine Service | "Generated using E.U. Copernicus Marine Service Information" |
+| `scat_metopb`, `scat_metopc` | vento a 10 m dei diffusometri ASCAT, prodotto costiero a 12,5 km | EUMETSAT OSI SAF, elaborato dal KNMI, dalla KNMI Data Platform | CC BY 4.0, "copyright (anno) EUMETSAT" |
 
 I file sono ritagliati e, per Copernicus, convertiti da NetCDF a GRIB2. I valori non vengono modificati, salvo la compressione GRIB semplice.
 
@@ -32,3 +36,4 @@ I file sono ritagliati e, per Copernicus, convertiti da NetCDF a GRIB2. I valori
 - In ogni release c'è `indice.json` (gribs: i file interi per modello, dal più recente; tiles: per modello la corsa completa, il lato e i quadratini con il loro peso). Si scarica senza credenziali e senza usare l'API: `https://github.com/giu-cloud/shift-grib/releases/download/<release>/indice.json`.
 - `.github/workflows/mantieni.yml` salva un file una volta al mese. GitHub spegne i lavori programmati dei depositi pubblici dopo 60 giorni senza attività.
 - Per Copernicus Marine servono un account gratuito e i Secrets `CMEMS_USER` e `CMEMS_PASS`. Senza, quel passo si salta.
+- `tools/satellite.py` e `.github/workflows/satellite.yml` fanno il vento dal satellite. Si tengono solo le celle buone: niente controllo di qualità fallito, niente ghiaccio, niente pioggia. Le fonti sono due. NASA PO.DAAC mette i file in rete 1,5-2,5 ore dopo l'orbita e richiede un account Earthdata gratuito (Secrets `EARTHDATA_USER` e `EARTHDATA_PASS`). La KNMI Data Platform carica una volta al giorno e serve per l'archivio e per riempire i buchi: la chiave è il Secret `KNMI_API_KEY` (gratuita); senza, si usa la chiave anonima pubblica del KNMI, che ha limiti condivisi.

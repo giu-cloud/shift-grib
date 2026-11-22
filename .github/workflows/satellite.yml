@@ -1,0 +1,90 @@
+name: Vento dal satellite
+
+# Ogni tre ore: i passaggi dei diffusometri ASCAT (Metop-B e Metop-C, prodotto costiero a 12,5 km di EUMETSAT OSI SAF,
+# fatto dal KNMI) che toccano il Mediterraneo, scritti nel formato SCW1 per l'app (descritto in tools/satellite.py).
+# Fonti: NASA PO.DAAC, in rete 1,5-2,5 ore dopo l'orbita, con un account Earthdata gratuito (segreti EARTHDATA_USER e
+# EARTHDATA_PASS); KNMI Data Platform, caricata una volta al giorno, per l'archivio e per i buchi. Release:
+#   - release satellite: i passaggi degli ultimi 3 giorni e indice.json;
+#   - release archivio-satellite-AAAA-MM: tutti i passaggi del mese, per il banco di prova. Non si cancella mai.
+# KNMI: il segreto KNMI_API_KEY (chiave personale gratuita); senza, la chiave anonima pubblicata dal KNMI per i client
+# pubblici, con limiti condivisi. Senza account Earthdata resta solo il KNMI. L'area si cambia con la variabile SAT_BOX.
+
+on:
+  schedule:
+    # ogni tre ore, mezz'ora dopo il giro dei GRIB
+    - cron: "50 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      prova:
+        description: "Stampa gli attributi del primo file di ogni satellite"
+        type: boolean
+        default: false
+  push:
+    branches: [satellite-prova]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: satellite
+  cancel-in-progress: false
+
+jobs:
+  satellite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KNMI_API_KEY: ${{ secrets.KNMI_API_KEY }}
+      SAT_BOX: ${{ vars.SAT_BOX || '30,46.5,-6,37' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Strumenti
+        run: pip install numpy requests netCDF4
+
+      - name: Account Earthdata (se ci sono i segreti)
+        env:
+          EARTHDATA_USER: ${{ secrets.EARTHDATA_USER }}
+          EARTHDATA_PASS: ${{ secrets.EARTHDATA_PASS }}
+        run: |
+          if [ -n "$EARTHDATA_USER" ]; then
+            printf 'machine urs.earthdata.nasa.gov login %s password %s\n' "$EARTHDATA_USER" "$EARTHDATA_PASS" > ~/.netrc
+            chmod 600 ~/.netrc
+            echo "account Earthdata presente"
+          else
+            echo "nessun account Earthdata: solo KNMI"
+          fi
+
+      - name: Prova delle altre fonti (solo sul ramo di prova)
+        if: github.event_name == 'push'
+        run: python tools/satellite_probe.py || true
+
+      - name: Indice attuale
+        run: gh release download satellite -p indice.json -D . || echo "nessun indice, primo giro"
+
+      - name: Passaggi nuovi
+        run: python tools/satellite.py --out sat --index indice.json ${{ (github.event_name == 'push' || inputs.prova) && '--probe' || '' }}
+
+      - name: Pubblica
+        run: |
+          note="Vento misurato dai diffusometri ASCAT su Metop-B e Metop-C: prodotto costiero a 12,5 km di EUMETSAT OSI SAF, elaborato dal KNMI, dalla KNMI Data Platform. Licenza CC BY 4.0, copyright EUMETSAT. Formato SCW1, descritto in tools/satellite.py."
+          gh release view satellite > /dev/null 2>&1 || gh release create satellite --latest=false --title "Vento dal satellite" --notes "Passaggi degli ultimi 3 giorni sul Mediterraneo e indice.json. $note"
+          for f in sat/*.scw.gz; do
+            [ -e "$f" ] || continue
+            d=$(basename "$f" | sed -E 's/^scat_[a-z0-9]+_([0-9]{4})([0-9]{2}).*/\1-\2/')
+            tag="archivio-satellite-$d"
+            gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --latest=false --title "Archivio vento dal satellite $d" --notes "Tutti i passaggi del mese, per il banco di prova. $note"
+            gh release upload "$tag" "$f" --clobber
+            gh release upload satellite "$f" --clobber
+          done
+          python tools/satellite.py --merge-index indice.json sat/nuovi.json indice_nuovo.json 3 > togliere.txt
+          cp indice_nuovo.json sat/indice.json
+          gh release upload satellite sat/indice.json --clobber
+          while read -r n; do
+            [ -n "$n" ] && gh release delete-asset satellite "$n" -y || true
+          done < togliere.txt
