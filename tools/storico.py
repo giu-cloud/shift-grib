@@ -205,22 +205,45 @@ def box_q():
 
 
 def one_gfs_rda(run, out):
-    """GFS 0,25° dall'archivio NSF NCAR (d084001), per le corse prima di Amazon."""
-    import numpy as np
+    """GFS 0,25° dall'archivio NSF NCAR (d084001), per le corse prima di Amazon: OPeNDAP (dodsC) del THREDDS, che legge
+    solo il riquadro (il ritaglio NCSS dei GRIB risponde 503; i file interi pesano ~330 MB a passo)."""
+    import numpy as np, netCDF4
+    la_all = 90.0 - 0.25 * np.arange(721); lo_all = 0.25 * np.arange(1440)
+    j0, j1 = int(round((90.0 - BOX[1]) / 0.25)), int(round((90.0 - BOX[0]) / 0.25))
+    lons = (BOX[2] % 360.0, BOX[3] % 360.0)
     def get_step(step):
-        u = (f"{RDA}/d084001/{run:%Y}/{run:%Y%m%d}/gfs.0p25.{run:%Y%m%d%H}.f{step:03d}.grib2?"
-             f"var=u-component_of_wind_height_above_ground&var=v-component_of_wind_height_above_ground&{box_q()}&vertCoord=10&accept=netcdf3")
-        ds = ncss(u)
-        try:
-            la = ds["lat"][:] if "lat" in ds.variables else ds["latitude"][:]
-            lo = ds["lon"][:] if "lon" in ds.variables else ds["longitude"][:]
-            uu = np.squeeze(ds["u-component_of_wind_height_above_ground"][:]); vv = np.squeeze(ds["v-component_of_wind_height_above_ground"][:])
-        finally:
-            ds.close()
-        return uv_grib(la, lo, uu, vv, run, step)
+        url = f"https://thredds.rda.ucar.edu/thredds/dodsC/files/g/d084001/{run:%Y}/{run:%Y%m%d}/gfs.0p25.{run:%Y%m%d%H}.f{step:03d}.grib2"
+        last = None
+        for k in range(5):
+            try:
+                ds = netCDF4.Dataset(url)
+                try:
+                    res = {}
+                    for name in ("u-component_of_wind_height_above_ground", "v-component_of_wind_height_above_ground"):
+                        var = ds[name]
+                        hz = var.dimensions[1]
+                        hv = np.asarray(ds[hz][:]).astype(float)
+                        kz = int(np.argmin(np.abs(hv - 10.0)))
+                        if lons[0] <= lons[1]:
+                            i0, i1 = int(round(lons[0] / 0.25)), int(round(lons[1] / 0.25))
+                            a = np.asarray(var[0, kz, j0:j1 + 1, i0:i1 + 1]); lo = lo_all[i0:i1 + 1]
+                        else:   # il riquadro passa per il meridiano 0
+                            i0, i1 = int(round(lons[0] / 0.25)), int(round(lons[1] / 0.25))
+                            a = np.concatenate([np.asarray(var[0, kz, j0:j1 + 1, i0:]), np.asarray(var[0, kz, j0:j1 + 1, :i1 + 1])], axis=1)
+                            lo = np.concatenate([lo_all[i0:], lo_all[:i1 + 1]])
+                        res[name] = (a, lo)
+                finally:
+                    ds.close()
+                u, lo = res["u-component_of_wind_height_above_ground"]; v, _ = res["v-component_of_wind_height_above_ground"]
+                return uv_grib(la_all[j0:j1 + 1], lo, u, v, run, step)
+            except Exception as e:
+                last = e; time.sleep(15 * (k + 1))
+        raise IOError(f"{url}: {last}")
     msgs = []
-    for res in bg.fetch_all([lambda s=s: get_step(s) for s in range(0, 145, 3)]):
-        msgs += res
+    steps = list(range(0, 145, 3))
+    for k in range(0, len(steps), 3):              # pochi alla volta: il server è condiviso
+        for res in bg.fetch_all([lambda s=s: get_step(s) for s in steps[k:k + 3]]):
+            msgs += res
     return bg.write(out, "gfs", run, msgs)
 
 
