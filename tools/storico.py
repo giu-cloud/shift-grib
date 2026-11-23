@@ -96,10 +96,27 @@ NOTE_GRIB = ("File per il banco di prova di Shift: campi ritagliati sul Mediterr
              "CC-BY-4.0, copyright ECMWF. GFS: NOAA, pubblico dominio.")
 
 
+def ecmwf_paths(run):
+    """Le cartelle dei dati aperti ECMWF secondo la data: dal 1/2/2024 a 0,25° (con 'ifs/' da marzo 2024), prima a
+    0,4° (0p4-beta, sulle copie dal gennaio 2023). Si provano in quest'ordine."""
+    if run >= dt.datetime(2024, 2, 1):
+        return ["ifs/0p25", "0p25"]
+    return ["0p4-beta", "ifs/0p4-beta"]
+
+
 def ecmwf_step(root, run, step, stream="oper", typ="fc", wanted=("10u", "10v", "msl")):
-    base = f"{root}/{run:%Y%m%d}/{run:%H}z/ifs/0p25/{stream}/{run:%Y%m%d%H}0000-{step}h-{stream}-{typ}"
+    last = None
+    for sub in ecmwf_paths(run):
+        base = f"{root}/{run:%Y%m%d}/{run:%H}z/{sub}/{stream}/{run:%Y%m%d%H}0000-{step}h-{stream}-{typ}"
+        try:
+            index = bg.http_get(base + ".index").decode()
+            break
+        except IOError as e:
+            last = e
+    else:
+        raise last
     parts = []
-    for line in bg.http_get(base + ".index").decode().splitlines():
+    for line in index.splitlines():
         rec = json.loads(line)
         if rec.get("param") in wanted and rec.get("levtype", "sfc") == "sfc":
             a, n = int(rec["_offset"]), int(rec["_length"])
