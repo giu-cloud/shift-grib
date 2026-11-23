@@ -69,7 +69,7 @@ jobs:
     timeout-minutes: 340
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 4
       matrix:
         include: ${{ fromJson(needs.piano.outputs.lavori) }}
     env:
@@ -137,5 +137,8 @@ jobs:
             d=$(basename "$f" | sed -E 's/^scat_[a-z0-9]+_([0-9]{4})([0-9]{2}).*/\1-\2/')
             tag="archivio-satellite-$d"
             gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --latest=false --title "Archivio vento dal satellite $d" --notes "Tutti i passaggi del mese, per il banco di prova. $note"
-            gh release upload "$tag" "$f" --clobber
+            for k in $(seq 1 14); do
+              gh release upload "$tag" "$f" --clobber && break
+              echo "caricamento non riuscito (limite di GitHub?), riprovo tra 5 minuti"; sleep 300
+            done
           done

@@ -74,10 +74,18 @@ def publish(path, tag, title, notes):
         if subprocess.run(["gh", "release", "view", tag], capture_output=True).returncode != 0:
             gh("release", "create", tag, "--latest=false", "--title", title, "--notes", notes)
         _made.add(tag)
-    for k in range(3):
+    # Il gettone del lavoro ha un limite di richieste all'ora (23/11: superato con molti lavori in parallelo): si aspetta
+    # fino a un'ora intera prima di arrendersi.
+    waited = 0
+    for k in range(40):
         r = subprocess.run(["gh", "release", "upload", tag, path, "--clobber"], capture_output=True, text=True)
         if r.returncode == 0:
             return
+        if "rate limit" in r.stderr.lower() and waited < 3900:
+            print(f"limite di richieste di GitHub: aspetto 5 minuti ({path})"); time.sleep(300); waited += 300
+            continue
+        if k >= 3:
+            break
         time.sleep(5 + 10 * k)
     raise RuntimeError(f"upload {path}: {r.stderr.strip()}")
 
@@ -261,24 +269,39 @@ def do_boe(a, b, out, probe=False):
                username=os.environ.get("CMEMS_USER"), password=os.environ.get("CMEMS_PASS"))
     for fn in sorted(os.listdir(os.path.join(out, "nc"))):
         try:
-            ds = netCDF4.Dataset(os.path.join(out, "nc", fn))
-        except Exception:
-            continue
+            rows += boe_file(os.path.join(out, "nc", fn), fn, netCDF4, np)
+        except Exception as e:
+            print(f"boe: {fn} saltato ({e})")
+    finish_boe(rows, out)
+    return True
+
+
+def boe_file(path, fn, netCDF4, np):
+    rows = []
+    if True:
+        ds = netCDF4.Dataset(path)
         v = ds.variables
         if "WSPD" not in v:
-            ds.close(); continue
+            ds.close(); return rows
         t = netCDF4.num2date(v["TIME"][:], v["TIME"].units, only_use_cftime_datetimes=False)
         lat = np.ravel(v["LATITUDE"][:]); lon = np.ravel(v["LONGITUDE"][:])
+        nt = len(t)
         def col(name):
+            """Una serie per istante: se la variabile ha anche la quota, la colonna con più dati validi."""
             if name not in v:
                 return None
             x = np.ma.filled(v[name][:].astype(float), np.nan)
-            return x if x.ndim == 1 else x[:, 0]
+            if x.ndim == 1:
+                return x if len(x) == nt else None
+            if x.shape[0] != nt and x.ndim == 2 and x.shape[1] == nt:
+                x = x.T
+            if x.shape[0] != nt:
+                return None
+            x = x.reshape(nt, -1)
+            best = int(np.argmax(np.sum(~np.isnan(x), axis=0)))
+            return x[:, best]
         ws, wd, gs = col("WSPD"), col("WDIR"), col("GSPD")
-        h = None
-        if "DEPH" in v:
-            dd = np.ma.filled(v["DEPH"][:].astype(float), np.nan)
-            h = dd if dd.ndim == 1 else dd[:, 0]
+        h = col("DEPH")
         pid = getattr(ds, "platform_code", fn.split("_")[-2] if "_" in fn else fn)
         for i in range(len(t)):
             if ws is None or np.isnan(ws[i]):
@@ -291,6 +314,10 @@ def do_boe(a, b, out, probe=False):
                          "wspd_ms": f"{ws[i]:.2f}", "wdir": "" if wd is None or np.isnan(wd[i]) else f"{wd[i]:.0f}",
                          "gust_ms": "" if gs is None or np.isnan(gs[i]) else f"{gs[i]:.2f}"})
         ds.close()
+    return rows
+
+
+def finish_boe(rows, out):
     by = {}
     for r in rows:
         by.setdefault(r["valid"][:7], []).append(r)
