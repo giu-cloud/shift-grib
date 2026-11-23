@@ -44,6 +44,7 @@ ECMWF_ROOTS = ["https://storage.googleapis.com/ecmwf-open-data", "https://ecmwf-
 _root = {"ok": None}
 ECMWF_LIVE = "https://data.ecmwf.int/forecasts"
 GFS_AWS = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
+GEFS_AWS = "https://noaa-gefs-pds.s3.amazonaws.com"
 RDA = "https://thredds.rda.ucar.edu/thredds/ncss/grid/files/g"
 BOX = [float(x) for x in os.environ.get("GRIB_BOX", "34,46,5,20").split(",")]
 
@@ -205,22 +206,45 @@ def box_q():
 
 
 def one_gfs_rda(run, out):
-    """GFS 0,25° dall'archivio NSF NCAR (d084001), per le corse prima di Amazon."""
-    import numpy as np
+    """GFS 0,25° dall'archivio NSF NCAR (d084001), per le corse prima di Amazon: OPeNDAP (dodsC) del THREDDS, che legge
+    solo il riquadro (il ritaglio NCSS dei GRIB risponde 503; i file interi pesano ~330 MB a passo)."""
+    import numpy as np, netCDF4
+    la_all = 90.0 - 0.25 * np.arange(721); lo_all = 0.25 * np.arange(1440)
+    j0, j1 = int(round((90.0 - BOX[1]) / 0.25)), int(round((90.0 - BOX[0]) / 0.25))
+    lons = (BOX[2] % 360.0, BOX[3] % 360.0)
     def get_step(step):
-        u = (f"{RDA}/d084001/{run:%Y}/{run:%Y%m%d}/gfs.0p25.{run:%Y%m%d%H}.f{step:03d}.grib2?"
-             f"var=u-component_of_wind_height_above_ground&var=v-component_of_wind_height_above_ground&{box_q()}&vertCoord=10&accept=netcdf3")
-        ds = ncss(u)
-        try:
-            la = ds["lat"][:] if "lat" in ds.variables else ds["latitude"][:]
-            lo = ds["lon"][:] if "lon" in ds.variables else ds["longitude"][:]
-            uu = np.squeeze(ds["u-component_of_wind_height_above_ground"][:]); vv = np.squeeze(ds["v-component_of_wind_height_above_ground"][:])
-        finally:
-            ds.close()
-        return uv_grib(la, lo, uu, vv, run, step)
+        url = f"https://thredds.rda.ucar.edu/thredds/dodsC/files/g/d084001/{run:%Y}/{run:%Y%m%d}/gfs.0p25.{run:%Y%m%d%H}.f{step:03d}.grib2"
+        last = None
+        for k in range(5):
+            try:
+                ds = netCDF4.Dataset(url)
+                try:
+                    res = {}
+                    for name in ("u-component_of_wind_height_above_ground", "v-component_of_wind_height_above_ground"):
+                        var = ds[name]
+                        hz = var.dimensions[1]
+                        hv = np.asarray(ds[hz][:]).astype(float)
+                        kz = int(np.argmin(np.abs(hv - 10.0)))
+                        if lons[0] <= lons[1]:
+                            i0, i1 = int(round(lons[0] / 0.25)), int(round(lons[1] / 0.25))
+                            a = np.asarray(var[0, kz, j0:j1 + 1, i0:i1 + 1]); lo = lo_all[i0:i1 + 1]
+                        else:   # il riquadro passa per il meridiano 0
+                            i0, i1 = int(round(lons[0] / 0.25)), int(round(lons[1] / 0.25))
+                            a = np.concatenate([np.asarray(var[0, kz, j0:j1 + 1, i0:]), np.asarray(var[0, kz, j0:j1 + 1, :i1 + 1])], axis=1)
+                            lo = np.concatenate([lo_all[i0:], lo_all[:i1 + 1]])
+                        res[name] = (a, lo)
+                finally:
+                    ds.close()
+                u, lo = res["u-component_of_wind_height_above_ground"]; v, _ = res["v-component_of_wind_height_above_ground"]
+                return uv_grib(la_all[j0:j1 + 1], lo, u, v, run, step)
+            except Exception as e:
+                last = e; time.sleep(15 * (k + 1))
+        raise IOError(f"{url}: {last}")
     msgs = []
-    for res in bg.fetch_all([lambda s=s: get_step(s) for s in range(0, 145, 3)]):
-        msgs += res
+    steps = list(range(0, 145, 3))
+    for k in range(0, len(steps), 3):              # pochi alla volta: il server è condiviso
+        for res in bg.fetch_all([lambda s=s: get_step(s) for s in steps[k:k + 3]]):
+            msgs += res
     return bg.write(out, "gfs", run, msgs)
 
 
@@ -273,25 +297,51 @@ def do_era5(a, b, out, have):
 
 
 def do_ybprova(codes, out):
+    """Quali codici YB esistono: la classifica in testo, 8 richieste alla volta, 20 secondi al massimo ciascuna."""
     import requests
+    from concurrent.futures import ThreadPoolExecutor
     os.makedirs(out, exist_ok=True)
-    rows = []
-    for code in [c.strip() for c in codes.split(",") if c.strip()]:
+    def one(code):
         try:
-            r = requests.get(f"https://yb.tl/l/{code}", timeout=60, headers=bg.UA)
+            r = requests.get(f"https://yb.tl/l/{code}", timeout=20, headers=bg.UA)
             txt = r.text if r.status_code == 200 else ""
             ok = r.status_code == 200 and "Rank" in txt and len(txt) > 300
             heads = [l.strip() for l in txt.splitlines() if l.strip() and not l[:1].isdigit() and "," not in l and not l.startswith("THESE")][:12]
             n = sum(1 for l in txt.splitlines() if l[:1].isdigit())
-            rows.append(f"{code}\t{r.status_code}\t{'si' if ok else 'no'}\t{n}\t{' | '.join(heads)}")
-            print(rows[-1])
+            return f"{code}\t{r.status_code}\t{'si' if ok else 'no'}\t{n}\t{' | '.join(heads)}"
         except Exception as e:
-            rows.append(f"{code}\terr\tno\t0\t{e}"); print(rows[-1])
-        time.sleep(0.3)
+            return f"{code}\terr\tno\t0\t{type(e).__name__}"
+    cs = [c.strip() for c in codes.split(",") if c.strip()]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        rows = list(pool.map(one, cs))
+    for r in rows:
+        if "\tsi\t" in r:
+            print(r)
     path = os.path.join(out, f"yb_prova_{dt.datetime.utcnow():%Y%m%d%H%M%S}.tsv")
     open(path, "w").write("codice\thttp\tesiste\trighe\tclassi\n" + "\n".join(rows) + "\n")
     publish(path, "archivio-misure", "Misure per il banco di prova", "Misure per il banco di prova.")
     return True
+
+
+def one_gefs(run, out):
+    """Controllo di GEFS (gec00) da Amazon (noaa-gefs-pds, dal 2017): 1° ogni 6 ore fino al 23/9/2020 (GEFS v11), poi
+    0,5° ogni 3 ore (v12). Vento a 10 m fino a 144 ore. Per gli anni senza GFS e senza ECMWF (2018-2020)."""
+    v12 = run >= dt.datetime(2020, 9, 23)
+    def name(step):
+        if v12:
+            return f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/atmos/pgrb2ap5/gec00.t{run:%H}z.pgrb2a.0p50.f{step:03d}"
+        return f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/pgrb2a/gec00.t{run:%H}z.pgrb2af{step:02d}" if step < 100 else \
+            f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/pgrb2a/gec00.t{run:%H}z.pgrb2af{step:03d}"
+    wanted = {("UGRD", "10 m above ground"), ("VGRD", "10 m above ground")}
+    def get_step(step):
+        idx = bg.http_get(name(step) + ".idx").decode()
+        return b"".join(bg.http_get(name(step), headers={"Range": f"bytes={a}-{b if b is not None else ''}"})
+                        for a, b in bg.parse_idx(idx, wanted))
+    steps = list(range(0, 145, 3 if v12 else 6))
+    msgs = []
+    for raw in bg.fetch_all([lambda s=s: get_step(s) for s in steps]):
+        msgs += bg.crop_bytes(raw, BOX)
+    return bg.write(out, "gefs", run, msgs)
 
 
 def one_gfs(run, out):
@@ -330,7 +380,7 @@ def runs_between(a, b, hours=(0, 12)):
 
 
 def do_gribs(kind, a, b, out, have):
-    fn = {"ecmwf": one_ecmwf, "gfs": one_gfs, "ens": one_ens}[kind]
+    fn = {"ecmwf": one_ecmwf, "gfs": one_gfs, "ens": one_ens, "gefs": one_gefs}[kind]
     ok = bad = 0
     for run in runs_between(a, b):
         name = f"{kind}_{run:%Y%m%d%H}.grb2"
@@ -560,7 +610,7 @@ def probe():
 
 def main():
     ap = argparse.ArgumentParser()
-    for k in ("ecmwf", "gfs", "ens", "metar", "boe", "era5"):
+    for k in ("ecmwf", "gfs", "ens", "metar", "boe", "era5", "gefs"):
         ap.add_argument(f"--{k}", nargs=2, metavar=("DA", "A"))
     ap.add_argument("--yb", default="")
     ap.add_argument("--ybprova", default="")
@@ -573,9 +623,10 @@ def main():
     ok = True
     if x.prova:
         probe()
+        probe_rda()
     if x.prova_boe:
         do_boe("2026-11-01", "2026-11-30", x.out, probe=True)
-    for kind in ("ecmwf", "gfs", "ens"):
+    for kind in ("ecmwf", "gfs", "ens", "gefs"):
         if getattr(x, kind):
             ok &= do_gribs(kind, *getattr(x, kind), x.out, have)
     if x.metar:

@@ -73,7 +73,7 @@ jobs:
     timeout-minutes: 340
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 6
       matrix:
         include: ${{ fromJson(needs.piano.outputs.lavori) }}
     env:
@@ -120,7 +120,7 @@ jobs:
         run: python tools/storico.py --prova-boe --out boe
 
       - name: Corse ECMWF, GFS o insieme
-        if: contains(fromJson('["ecmwf","gfs","ens"]'), matrix.cosa)
+        if: contains(fromJson('["ecmwf","gfs","ens","gefs"]'), matrix.cosa)
         run: python tools/storico.py --${{ matrix.cosa }} ${{ matrix.da }} ${{ matrix.a }} --out storico --have nomi.txt
 
       - name: METAR
