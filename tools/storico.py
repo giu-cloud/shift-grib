@@ -21,6 +21,13 @@ banco_di_prova/richiesta_app_23_11_sera.md (Project "Software regatta").
   --yb CODICI    tracciati YB di regate passate (B4), codici separati da virgole (per esempio rmsr2025,pm2025): il KML con
                  tutti i tracciati (https://yb.tl/<codice>.kml) e la classifica in testo, nella release archivio-misure.
   --prova        stampa che cosa c'è sulle fonti (cartelle di Amazon, file delle boe) senza scaricare dati.
+  --era5 DA A    rianalisi ERA5 (ECMWF/Copernicus, CC-BY-4.0) dall'archivio NSF NCAR (d633000) col servizio di ritaglio del
+                 suo THREDDS, senza account: vento a 10 m orario a 0,25°. Un file per giorno, era5_AAAAMMGG00.grb2 con i
+                 passi 0-23, nella release archivio-AAAA-MM (regate vere, 23/11 notte).
+  --gfs, prima di marzo 2021 (Amazon comincia lì): dall'archivio NSF NCAR di GFS 0,25° (d084001), stesso ritaglio THREDDS,
+                 ogni 3 ore fino a 144.
+  --ybprova CODICI  prova quali codici YB esistono (classifica in testo): una riga per codice in yb_prova_<ora>.tsv,
+                 release archivio-misure, con le classi trovate.
 
 Date nel formato AAAA-MM-GG, estremi compresi. --have FILE: nomi già pubblicati, uno per riga (non si rifanno).
 Ogni file si pubblica appena pronto (gh release upload), così un lavoro interrotto non perde quello che ha fatto.
@@ -37,6 +44,7 @@ ECMWF_ROOTS = ["https://storage.googleapis.com/ecmwf-open-data", "https://ecmwf-
 _root = {"ok": None}
 ECMWF_LIVE = "https://data.ecmwf.int/forecasts"
 GFS_AWS = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
+RDA = "https://thredds.rda.ucar.edu/thredds/ncss/grid/files/g"
 BOX = [float(x) for x in os.environ.get("GRIB_BOX", "34,46,5,20").split(",")]
 
 # Aeroporti (ICAO): le aree di Lens della richiesta B1, più Sardegna, Corsica e Calabria per i percorsi con rilievo forte.
@@ -147,7 +155,148 @@ def one_ecmwf(run, out):
     return bg.write(out, "ecmwf", run, msgs)
 
 
+def uv_grib(lat, lon, u, v, ref, step, kind="fc"):
+    """Due messaggi GRIB2 (10u e 10v) su griglia regolare da matrici [lat, lon] (lat dall'alto o dal basso)."""
+    import numpy as np
+    lat = np.asarray(lat, dtype=float); lon = np.asarray(lon, dtype=float)
+    lon = ((lon + 180.0) % 360.0) - 180.0
+    oi = np.argsort(lon, kind="stable"); lon = lon[oi]; u = np.asarray(u)[:, oi]; v = np.asarray(v)[:, oi]
+    if lat[0] < lat[-1]:
+        lat = lat[::-1]; u = u[::-1]; v = v[::-1]
+    out = []
+    for name, f in (("10u", u), ("10v", v)):
+        h = bg.ec.codes_grib_new_from_samples("regular_ll_sfc_grib2")
+        try:
+            bg.ec.codes_set(h, "centre", 98)
+            bg.ec.codes_set(h, "dataDate", int(ref.strftime("%Y%m%d"))); bg.ec.codes_set(h, "dataTime", int(ref.strftime("%H%M")))
+            bg.ec.codes_set(h, "typeOfFirstFixedSurface", 103); bg.ec.codes_set(h, "scaleFactorOfFirstFixedSurface", 0)
+            bg.ec.codes_set(h, "scaledValueOfFirstFixedSurface", 10)
+            bg.ec.codes_set(h, "discipline", 0); bg.ec.codes_set(h, "parameterCategory", 2)
+            bg.ec.codes_set(h, "parameterNumber", 2 if name == "10u" else 3)
+            bg.ec.codes_set(h, "stepUnits", 1); bg.ec.codes_set(h, "forecastTime", int(step))
+            bg.ec.codes_set(h, "Ni", len(lon)); bg.ec.codes_set(h, "Nj", len(lat))
+            bg.ec.codes_set(h, "latitudeOfFirstGridPointInDegrees", float(lat[0])); bg.ec.codes_set(h, "latitudeOfLastGridPointInDegrees", float(lat[-1]))
+            bg.ec.codes_set(h, "longitudeOfFirstGridPointInDegrees", float(lon[0] % 360.0)); bg.ec.codes_set(h, "longitudeOfLastGridPointInDegrees", float(lon[-1] % 360.0))
+            bg.ec.codes_set(h, "iDirectionIncrementInDegrees", float(abs(lon[1] - lon[0]))); bg.ec.codes_set(h, "jDirectionIncrementInDegrees", float(abs(lat[1] - lat[0])))
+            bg.ec.codes_set(h, "jScansPositively", 0)
+            bg.ec.codes_set(h, "packingType", "grid_simple"); bg.ec.codes_set(h, "bitsPerValue", 12)
+            bg.ec.codes_set_values(h, np.asarray(f, dtype=float).flatten())
+            out.append(bg.ec.codes_get_message(h))
+        finally:
+            bg.ec.codes_release(h)
+    return out
+
+
+def ncss(url, tries=4):
+    """Una richiesta al servizio di ritaglio THREDDS: il netCDF in memoria."""
+    import netCDF4
+    last = None
+    for k in range(tries):
+        try:
+            data = bg.http_get(url, tries=1, timeout=300)
+            return netCDF4.Dataset("x", memory=data)
+        except Exception as e:
+            last = e; time.sleep(10 * (k + 1))
+    raise IOError(f"{url}: {last}")
+
+
+def box_q():
+    return f"north={BOX[1]}&south={BOX[0]}&west={BOX[2]}&east={BOX[3]}&horizStride=1"
+
+
+def one_gfs_rda(run, out):
+    """GFS 0,25° dall'archivio NSF NCAR (d084001), per le corse prima di Amazon."""
+    import numpy as np
+    def get_step(step):
+        u = (f"{RDA}/d084001/{run:%Y}/{run:%Y%m%d}/gfs.0p25.{run:%Y%m%d%H}.f{step:03d}.grib2?"
+             f"var=u-component_of_wind_height_above_ground&var=v-component_of_wind_height_above_ground&{box_q()}&vertCoord=10&accept=netcdf3")
+        ds = ncss(u)
+        try:
+            la = ds["lat"][:] if "lat" in ds.variables else ds["latitude"][:]
+            lo = ds["lon"][:] if "lon" in ds.variables else ds["longitude"][:]
+            uu = np.squeeze(ds["u-component_of_wind_height_above_ground"][:]); vv = np.squeeze(ds["v-component_of_wind_height_above_ground"][:])
+        finally:
+            ds.close()
+        return uv_grib(la, lo, uu, vv, run, step)
+    msgs = []
+    for res in bg.fetch_all([lambda s=s: get_step(s) for s in range(0, 145, 3)]):
+        msgs += res
+    return bg.write(out, "gfs", run, msgs)
+
+
+def do_era5(a, b, out, have):
+    """ERA5 orario dal THREDDS di NSF NCAR (d633000): un ritaglio per mese e per componente, poi un file per giorno."""
+    import numpy as np
+    d0, d1 = dt.date.fromisoformat(a), dt.date.fromisoformat(b)
+    ok = bad = 0
+    m = d0.replace(day=1)
+    while m <= d1:
+        nxt = (m.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+        last = nxt - dt.timedelta(days=1)
+        lo_d, hi_d = max(d0, m), min(d1, last)
+        if all(f"era5_{d:%Y%m%d}00.grb2" in have for d in days(str(lo_d), str(hi_d))):
+            m = nxt; continue
+        try:
+            fields = {}
+            for code, var in (("128_165_10u", "VAR_10U"), ("128_166_10v", "VAR_10V")):
+                url = (f"{RDA}/d633000/e5.oper.an.sfc/{m:%Y%m}/e5.oper.an.sfc.{code}.ll025sc.{m:%Y%m}0100_{last:%Y%m%d}23.nc?"
+                       f"var={var}&{box_q()}&time_start={lo_d}T00:00:00Z&time_end={hi_d}T23:00:00Z&accept=netcdf3")
+                ds = ncss(url)
+                try:
+                    tv = ds["time"]
+                    import netCDF4
+                    times = netCDF4.num2date(tv[:], tv.units, only_use_cftime_datetimes=False)
+                    fields[var] = (ds["latitude"][:], ds["longitude"][:], [dt.datetime(t.year, t.month, t.day, t.hour) for t in times], np.asarray(ds[var][:]))
+                finally:
+                    ds.close()
+        except Exception as e:
+            print(f"era5 {m:%Y-%m}: non riuscito: {e}"); bad += 1; m = nxt; continue
+        la, lo, times, U = fields["VAR_10U"]; _, _, _, V = fields["VAR_10V"]
+        byday = {}
+        for k, t in enumerate(times):
+            byday.setdefault(t.date(), []).append(k)
+        for day, ks in sorted(byday.items()):
+            name = f"era5_{day:%Y%m%d}00.grb2"
+            if name in have:
+                continue
+            ref = dt.datetime(day.year, day.month, day.day)
+            msgs = []
+            for k in ks:
+                msgs += uv_grib(la, lo, U[k], V[k], ref, times[k].hour)
+            path = bg.write(out, "era5", ref, msgs)
+            publish(path, f"archivio-{day:%Y-%m}", f"Archivio {day:%Y-%m}",
+                    "Corse archiviate per il banco di prova. " + NOTE_GRIB + " ERA5: Copernicus Climate Change Service, CC-BY-4.0, dall'archivio NSF NCAR (d633000).")
+            os.remove(path); ok += 1
+        m = nxt
+    print(f"era5: {ok} giorni fatti, {bad} mesi non riusciti")
+    return bad == 0 or ok > 0
+
+
+def do_ybprova(codes, out):
+    import requests
+    os.makedirs(out, exist_ok=True)
+    rows = []
+    for code in [c.strip() for c in codes.split(",") if c.strip()]:
+        try:
+            r = requests.get(f"https://yb.tl/l/{code}", timeout=60, headers=bg.UA)
+            txt = r.text if r.status_code == 200 else ""
+            ok = r.status_code == 200 and "Rank" in txt and len(txt) > 300
+            heads = [l.strip() for l in txt.splitlines() if l.strip() and not l[:1].isdigit() and "," not in l and not l.startswith("THESE")][:12]
+            n = sum(1 for l in txt.splitlines() if l[:1].isdigit())
+            rows.append(f"{code}\t{r.status_code}\t{'si' if ok else 'no'}\t{n}\t{' | '.join(heads)}")
+            print(rows[-1])
+        except Exception as e:
+            rows.append(f"{code}\terr\tno\t0\t{e}"); print(rows[-1])
+        time.sleep(0.3)
+    path = os.path.join(out, f"yb_prova_{dt.datetime.utcnow():%Y%m%d%H%M%S}.tsv")
+    open(path, "w").write("codice\thttp\tesiste\trighe\tclassi\n" + "\n".join(rows) + "\n")
+    publish(path, "archivio-misure", "Misure per il banco di prova", "Misure per il banco di prova.")
+    return True
+
+
 def one_gfs(run, out):
+    if run < dt.datetime(2021, 3, 1):
+        return one_gfs_rda(run, out)
     def name(step):
         return f"{GFS_AWS}/gfs.{run:%Y%m%d}/{run:%H}/atmos/gfs.t{run:%H}z.pgrb2.0p25.f{step:03d}"
     wanted = {("UGRD", "10 m above ground"), ("VGRD", "10 m above ground"), ("PRMSL", "mean sea level")}
@@ -366,7 +515,8 @@ def do_yb(codes, out):
     os.makedirs(out, exist_ok=True)
     ok = True
     for code in [c.strip() for c in codes.split(",") if c.strip()]:
-        for url, name in ((f"https://yb.tl/{code}.kml", f"yb_{code}.kml"), (f"https://yb.tl/l/{code}", f"yb_{code}_classifica.txt")):
+        for url, name in ((f"https://yb.tl/{code}.kml", f"yb_{code}.kml"), (f"https://yb.tl/l/{code}", f"yb_{code}_classifica.txt"),
+                          (f"https://cf.yb.tl/JSON/{code}/RaceSetup", f"yb_{code}_setup.json")):
             try:
                 r = requests.get(url, timeout=300, headers=bg.UA)
                 print(f"yb {url}: HTTP {r.status_code}, {len(r.content)} byte")
@@ -410,9 +560,10 @@ def probe():
 
 def main():
     ap = argparse.ArgumentParser()
-    for k in ("ecmwf", "gfs", "ens", "metar", "boe"):
+    for k in ("ecmwf", "gfs", "ens", "metar", "boe", "era5"):
         ap.add_argument(f"--{k}", nargs=2, metavar=("DA", "A"))
     ap.add_argument("--yb", default="")
+    ap.add_argument("--ybprova", default="")
     ap.add_argument("--prova", action="store_true")
     ap.add_argument("--prova-boe", action="store_true")
     ap.add_argument("--out", default="storico")
@@ -433,6 +584,10 @@ def main():
         ok &= do_boe(*x.boe, x.out)
     if x.yb:
         ok &= do_yb(x.yb, x.out)
+    if x.ybprova:
+        ok &= do_ybprova(x.ybprova, x.out)
+    if x.era5:
+        ok &= do_era5(*x.era5, x.out, have)
     return 0 if ok else 1
 
 
