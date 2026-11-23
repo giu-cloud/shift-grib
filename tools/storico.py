@@ -32,7 +32,7 @@ banco_di_prova/richiesta_app_23_11_sera.md (Project "Software regatta").
 Date nel formato AAAA-MM-GG, estremi compresi. --have FILE: nomi già pubblicati, uno per riga (non si rifanno).
 Ogni file si pubblica appena pronto (gh release upload), così un lavoro interrotto non perde quello che ha fatto.
 """
-import argparse, csv, datetime as dt, io, json, os, subprocess, sys, time
+import argparse, csv, datetime as dt, io, json, os, re, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_gribs as bg
 
@@ -47,6 +47,8 @@ GFS_AWS = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
 GEFS_AWS = "https://noaa-gefs-pds.s3.amazonaws.com"
 RDA = "https://thredds.rda.ucar.edu/thredds/ncss/grid/files/g"
 BOX = [float(x) for x in os.environ.get("GRIB_BOX", "34,46,5,20").split(",")]
+# Altre aree (per esempio l'Egeo per l'Aegean 600): stessi nomi di file, release a parte (archivio-egeo-AAAA-MM).
+ARCH = os.environ.get("ARCHIVIO", "archivio")
 
 # Aeroporti (ICAO): le aree di Lens della richiesta B1, più Sardegna, Corsica e Calabria per i percorsi con rilievo forte.
 METAR_STATIONS = {
@@ -82,8 +84,18 @@ def publish(path, tag, title, notes):
         print(f"(niente pubblicazione) {path} -> {tag}")
         return
     if tag not in _made:
-        if subprocess.run(["gh", "release", "view", tag], capture_output=True).returncode != 0:
-            gh("release", "create", tag, "--latest=false", "--title", title, "--notes", notes)
+        for k in range(14):                    # anche la creazione risente del limite di richieste (23/11 notte)
+            if subprocess.run(["gh", "release", "view", tag], capture_output=True).returncode == 0:
+                break
+            r = subprocess.run(["gh", "release", "create", tag, "--latest=false", "--title", title, "--notes", notes],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                break
+            if "rate limit" in r.stderr.lower() and k < 13:
+                print(f"limite di richieste di GitHub: aspetto 5 minuti (release {tag})"); time.sleep(300); continue
+            if "already" in r.stderr.lower():
+                break
+            raise RuntimeError(f"release create {tag}: {r.stderr.strip()}")
         _made.add(tag)
     # Il gettone del lavoro ha un limite di richieste all'ora (23/11: superato con molti lavori in parallelo): si aspetta
     # fino a un'ora intera prima di arrendersi.
@@ -188,8 +200,9 @@ def uv_grib(lat, lon, u, v, ref, step, kind="fc"):
     return out
 
 
-def ncss(url, tries=4):
-    """Una richiesta al servizio di ritaglio THREDDS: il netCDF in memoria."""
+def ncss(url, tries=9):
+    """Una richiesta al servizio di ritaglio THREDDS: il netCDF in memoria. Il servizio risponde 503 quando ha troppe
+    richieste insieme (23/11 notte: 2 mesi su 21 con molti lavori in parallelo): si riprova per circa 20 minuti."""
     import netCDF4
     last = None
     for k in range(tries):
@@ -197,7 +210,7 @@ def ncss(url, tries=4):
             data = bg.http_get(url, tries=1, timeout=300)
             return netCDF4.Dataset("x", memory=data)
         except Exception as e:
-            last = e; time.sleep(10 * (k + 1))
+            last = e; print(f"THREDDS: tentativo {k + 1} non riuscito ({str(e)[-60:]})"); time.sleep(30 * (k + 1))
     raise IOError(f"{url}: {last}")
 
 
@@ -288,7 +301,7 @@ def do_era5(a, b, out, have):
             for k in ks:
                 msgs += uv_grib(la, lo, U[k], V[k], ref, times[k].hour)
             path = bg.write(out, "era5", ref, msgs)
-            publish(path, f"archivio-{day:%Y-%m}", f"Archivio {day:%Y-%m}",
+            publish(path, f"{ARCH}-{day:%Y-%m}", f"Archivio {day:%Y-%m}",
                     "Corse archiviate per il banco di prova. " + NOTE_GRIB + " ERA5: Copernicus Climate Change Service, CC-BY-4.0, dall'archivio NSF NCAR (d633000).")
             os.remove(path); ok += 1
         m = nxt
@@ -334,13 +347,30 @@ def one_gefs(run, out):
             f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/pgrb2a/gec00.t{run:%H}z.pgrb2af{step:03d}"
     wanted = {("UGRD", "10 m above ground"), ("VGRD", "10 m above ground")}
     def get_step(step):
-        idx = bg.http_get(name(step) + ".idx").decode()
+        try:
+            idx = bg.http_get(name(step) + ".idx").decode()
+        except Exception:
+            # 23/11 notte: per alcuni giorni del 2018 l'indice manca (HTTP 404). Si scarica il file intero (1°, pochi MB)
+            # e si tengono solo i due campi del vento.
+            return ("intero", bg.http_get(name(step)))
         return b"".join(bg.http_get(name(step), headers={"Range": f"bytes={a}-{b if b is not None else ''}"})
                         for a, b in bg.parse_idx(idx, wanted))
     steps = list(range(0, 145, 3 if v12 else 6))
+    try:
+        first = get_step(0)
+    except Exception as e:
+        lst = f"{GEFS_AWS}/?list-type=2&max-keys=12&prefix=gefs.{run:%Y%m%d}/{run:%H}/"
+        try:
+            keys = re.findall(r"<Key>([^<]+)</Key>", bg.http_get(lst).decode())
+        except Exception as e2:
+            keys = [f"(elenco non riuscito: {e2})"]
+        raise IOError(f"{e}; nel secchio sotto gefs.{run:%Y%m%d}/{run:%H}/: {keys[:12]}")
     msgs = []
-    for raw in bg.fetch_all([lambda s=s: get_step(s) for s in steps]):
-        msgs += bg.crop_bytes(raw, BOX)
+    for raw in [first] + bg.fetch_all([lambda s=s: get_step(s) for s in steps[1:]]):
+        if isinstance(raw, tuple):
+            msgs += bg.crop_bytes(raw[1], BOX, keep=("10u", "10v"))
+        else:
+            msgs += bg.crop_bytes(raw, BOX)
     return bg.write(out, "gefs", run, msgs)
 
 
@@ -394,7 +424,7 @@ def do_gribs(kind, a, b, out, have):
             print(f"{kind}: corsa {run:%Y-%m-%d %H}Z non riuscita: {e}")
             bad += 1
             continue
-        tag = (f"archivio-ens-{run:%Y-%m}" if kind == "ens" else f"archivio-{run:%Y-%m}")
+        tag = (f"{ARCH}-ens-{run:%Y-%m}" if kind == "ens" else f"{ARCH}-{run:%Y-%m}")
         publish(path, tag, f"Archivio {'insieme ECMWF ' if kind == 'ens' else ''}{run:%Y-%m}",
                 "Corse archiviate per il banco di prova. " + NOTE_GRIB)
         os.remove(path)
