@@ -1,0 +1,141 @@
+name: Archivio storico e misure per il banco
+
+# Per il banco di prova di Shift (richieste B1, B3 e B5 del 23/11/2026, tools/storico.py):
+#   - a mano: corse passate di ECMWF e GFS da Amazon (per esempio l'estate 2025), insieme di ECMWF, passaggi ASCAT
+#     passati da PO.DAAC, METAR degli aeroporti, anemometri delle boe. Il periodo si divide per mesi, un lavoro per mese
+#     e per fonte, in parallelo.
+#   - ogni giorno: METAR, insieme di ECMWF e boe dei due giorni prima, per accumulare l'archivio.
+# Release: archivio-AAAA-MM (ECMWF, GFS, stessi nomi dell'archivio vivo), archivio-ens-AAAA-MM, archivio-satellite-AAAA-MM,
+# archivio-misure (CSV mensili). Non si cancella niente.
+
+on:
+  schedule:
+    - cron: "20 7 * * *"
+  workflow_dispatch:
+    inputs:
+      cosa:
+        description: "Fonti, separate da virgole: ecmwf, gfs, ens, ascat, metar, boe, prova, prova-boe"
+        type: string
+        default: "prova"
+      da:
+        description: "Primo giorno (AAAA-MM-GG)"
+        type: string
+        default: ""
+      a:
+        description: "Ultimo giorno (AAAA-MM-GG)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: storico-${{ github.event_name }}-${{ inputs.cosa }}-${{ inputs.da }}
+  cancel-in-progress: false
+
+jobs:
+  piano:
+    runs-on: ubuntu-latest
+    outputs:
+      lavori: ${{ steps.p.outputs.lavori }}
+    steps:
+      - id: p
+        env:
+          COSA: ${{ github.event_name == 'schedule' && 'metar,ens,boe' || inputs.cosa }}
+          DA: ${{ inputs.da }}
+          A: ${{ inputs.a }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import datetime as dt, json, os
+          cosa = [c.strip() for c in os.environ["COSA"].split(",") if c.strip()]
+          oggi = dt.date.today()
+          da = dt.date.fromisoformat(os.environ["DA"]) if os.environ.get("DA") else oggi - dt.timedelta(days=2)
+          a = dt.date.fromisoformat(os.environ["A"]) if os.environ.get("A") else oggi
+          lavori = []
+          for c in cosa:
+              if c in ("prova", "prova-boe"):
+                  lavori.append({"cosa": c, "da": str(da), "a": str(a)}); continue
+              d = da
+              while d <= a:                      # un lavoro per mese
+                  fine = min(a, (d.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1))
+                  lavori.append({"cosa": c, "da": str(d), "a": str(fine)})
+                  d = fine + dt.timedelta(days=1)
+          print("lavori=" + json.dumps(lavori))
+          EOF
+
+  lavoro:
+    needs: piano
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include: ${{ fromJson(needs.piano.outputs.lavori) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GRIB_BOX: ${{ vars.GRIB_BOX || '34,46,5,20' }}
+      SAT_BOX: ${{ vars.SAT_BOX || '30,46.5,-6,37' }}
+      CMEMS_USER: ${{ secrets.CMEMS_USER }}
+      CMEMS_PASS: ${{ secrets.CMEMS_PASS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Strumenti
+        run: |
+          pip install -q numpy requests eccodes netCDF4
+          if [ "${{ matrix.cosa }}" = "boe" ] || [ "${{ matrix.cosa }}" = "prova-boe" ]; then pip install -q copernicusmarine; fi
+
+      - name: Account Earthdata
+        if: matrix.cosa == 'ascat'
+        env:
+          EARTHDATA_USER: ${{ secrets.EARTHDATA_USER }}
+          EARTHDATA_PASS: ${{ secrets.EARTHDATA_PASS }}
+        run: |
+          printf 'machine urs.earthdata.nasa.gov login %s password %s\n' "$EARTHDATA_USER" "$EARTHDATA_PASS" > ~/.netrc
+          chmod 600 ~/.netrc
+
+      - name: File già pubblicati
+        run: |
+          : > nomi.txt
+          for r in $(gh release list --limit 300 --json tagName -q '.[].tagName' | grep '^archivio-' || true); do
+            gh release view "$r" --json assets -q '.assets[].name' >> nomi.txt || true
+          done
+          wc -l nomi.txt
+
+      - name: Prova delle fonti
+        if: matrix.cosa == 'prova'
+        run: python tools/storico.py --prova
+
+      - name: Prova delle boe
+        if: matrix.cosa == 'prova-boe'
+        run: python tools/storico.py --prova-boe --out boe
+
+      - name: Corse ECMWF, GFS o insieme
+        if: contains(fromJson('["ecmwf","gfs","ens"]'), matrix.cosa)
+        run: python tools/storico.py --${{ matrix.cosa }} ${{ matrix.da }} ${{ matrix.a }} --out storico --have nomi.txt
+
+      - name: METAR
+        if: matrix.cosa == 'metar'
+        run: python tools/storico.py --metar ${{ matrix.da }} ${{ matrix.a }} --out misure
+
+      - name: Boe
+        if: matrix.cosa == 'boe'
+        run: python tools/storico.py --boe ${{ matrix.da }} ${{ matrix.a }} --out boe
+
+      - name: Passaggi ASCAT passati
+        if: matrix.cosa == 'ascat'
+        run: |
+          python tools/satellite.py --backfill ${{ matrix.da }} ${{ matrix.a }} --out rec --have nomi.txt
+          note="Vento misurato dai diffusometri ASCAT su Metop-B e Metop-C: prodotto costiero a 12,5 km di EUMETSAT OSI SAF, elaborato dal KNMI. Licenza CC BY 4.0, copyright EUMETSAT. Formato SCW1, descritto in tools/satellite.py."
+          for f in rec/*.scw.gz; do
+            [ -e "$f" ] || continue
+            d=$(basename "$f" | sed -E 's/^scat_[a-z0-9]+_([0-9]{4})([0-9]{2}).*/\1-\2/')
+            tag="archivio-satellite-$d"
+            gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --latest=false --title "Archivio vento dal satellite $d" --notes "Tutti i passaggi del mese, per il banco di prova. $note"
+            gh release upload "$tag" "$f" --clobber
+          done
