@@ -28,6 +28,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_gribs as bg
 
 ECMWF_AWS = "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com"
+# Copie dei dati aperti di ECMWF: Amazon (regionale e globale), Azure (Planetary Computer), Google Cloud. Si usa la prima
+# che risponde (23/11: Amazon regionale ha dato HTTP 503 su tutto).
+ECMWF_ROOTS = [ECMWF_AWS, "https://ecmwf-forecasts.s3.amazonaws.com", "https://ai4edataeuwest.blob.core.windows.net/ecmwf",
+               "https://storage.googleapis.com/ecmwf-open-data"]
+_root = {"ok": None}
 ECMWF_LIVE = "https://data.ecmwf.int/forecasts"
 GFS_AWS = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
 BOX = [float(x) for x in os.environ.get("GRIB_BOX", "34,46,5,20").split(",")]
@@ -92,11 +97,25 @@ def ecmwf_step(root, run, step, stream="oper", typ="fc", wanted=("10u", "10v", "
     return b"".join(parts)
 
 
+def ecmwf_any(run, step, **kw):
+    roots = ([_root["ok"]] if _root["ok"] else []) + [r for r in ECMWF_ROOTS + [ECMWF_LIVE] if r != _root["ok"]]
+    last = None
+    for root in roots:
+        try:
+            data = ecmwf_step(root, run, step, **kw)
+            _root["ok"] = root
+            return data
+        except IOError as e:
+            last = e
+    raise last
+
+
 def one_ecmwf(run, out):
     steps = list(range(0, 145, 3))
     msgs = []
+    ecmwf_any(run, 0)                              # sceglie la copia che risponde prima di partire in parallelo
     for k in range(0, len(steps), bg.WORKERS):
-        for raw in bg.fetch_all([lambda s=s: ecmwf_step(ECMWF_AWS, run, s) for s in steps[k:k + bg.WORKERS]]):
+        for raw in bg.fetch_all([lambda s=s: ecmwf_any(run, s) for s in steps[k:k + bg.WORKERS]]):
             msgs += bg.crop_bytes(raw, BOX)
     return bg.write(out, "ecmwf", run, msgs)
 
@@ -119,13 +138,9 @@ def one_gfs(run, out):
 def one_ens(run, out):
     steps = list(range(0, 145, 6))
     def get(step):
-        for root in (ECMWF_AWS, ECMWF_LIVE):
-            try:
-                return ecmwf_step(root, run, step, stream="enfo", typ="ef", wanted=("10u", "10v"))
-            except IOError as e:
-                last = e
-        raise last
+        return ecmwf_any(run, step, stream="enfo", typ="ef", wanted=("10u", "10v"))
     msgs = []
+    get(0)
     for k in range(0, len(steps), 4):            # un passo dell'insieme sono ~100 campi globali: pochi alla volta
         for raw in bg.fetch_all([lambda s=s: get(s) for s in steps[k:k + 4]]):
             msgs += bg.crop_bytes(raw, BOX)
@@ -145,7 +160,7 @@ def do_gribs(kind, a, b, out, have):
         name = f"{kind}_{run:%Y%m%d%H}.grb2"
         if name in have:
             continue
-        if run > dt.datetime.utcnow() - dt.timedelta(hours=8):
+        if run > dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(hours=8):
             continue
         try:
             path = fn(run, out)
@@ -302,15 +317,16 @@ def do_boe(a, b, out, probe=False):
 
 def probe():
     """Che cosa c'è su Amazon: una corsa d'estate 2025 e una di questo mese, oper ed enfo."""
-    for run in (dt.datetime(2025, 7, 1, 0), dt.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - dt.timedelta(days=3)):
+    for run in (dt.datetime(2025, 7, 1, 0), dt.datetime.now(dt.timezone.utc).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0) - dt.timedelta(days=3)):
         for stream, typ in (("oper", "fc"), ("enfo", "ef")):
-            u = f"{ECMWF_AWS}/{run:%Y%m%d}/{run:%H}z/ifs/0p25/{stream}/{run:%Y%m%d%H}0000-24h-{stream}-{typ}.index"
-            try:
-                t = bg.http_get(u, tries=1, timeout=60).decode().splitlines()
-                n10 = sum(1 for l in t if '"10u"' in l)
-                print(f"ECMWF {stream} {run:%Y-%m-%d %H}Z: indice con {len(t)} righe, 10u: {n10}")
-            except Exception as e:
-                print(f"ECMWF {stream} {run:%Y-%m-%d %H}Z: {e}")
+            for root in ECMWF_ROOTS + [ECMWF_LIVE]:
+                u = f"{root}/{run:%Y%m%d}/{run:%H}z/ifs/0p25/{stream}/{run:%Y%m%d%H}0000-24h-{stream}-{typ}.index"
+                try:
+                    t = bg.http_get(u, tries=1, timeout=60).decode().splitlines()
+                    n10 = sum(1 for l in t if '"10u"' in l)
+                    print(f"ECMWF {stream} {run:%Y-%m-%d %H}Z {root}: indice con {len(t)} righe, 10u: {n10}")
+                except Exception as e:
+                    print(f"ECMWF {stream} {run:%Y-%m-%d %H}Z {root}: {e}")
     for run in (dt.datetime(2025, 7, 1, 0),):
         u = f"{GFS_AWS}/gfs.{run:%Y%m%d}/{run:%H}/atmos/gfs.t{run:%H}z.pgrb2.0p25.f024.idx"
         try:
