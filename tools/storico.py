@@ -30,8 +30,8 @@ import build_gribs as bg
 ECMWF_AWS = "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com"
 # Copie dei dati aperti di ECMWF: Amazon (regionale e globale), Azure (Planetary Computer), Google Cloud. Si usa la prima
 # che risponde (23/11: Amazon regionale ha dato HTTP 503 su tutto).
-ECMWF_ROOTS = [ECMWF_AWS, "https://ecmwf-forecasts.s3.amazonaws.com", "https://ai4edataeuwest.blob.core.windows.net/ecmwf",
-               "https://storage.googleapis.com/ecmwf-open-data"]
+# Prova del 23/11: Google risponde sempre, Amazon a tratti (503), Azure no (409), data.ecmwf.int solo gli ultimi giorni.
+ECMWF_ROOTS = ["https://storage.googleapis.com/ecmwf-open-data", "https://ecmwf-forecasts.s3.amazonaws.com", ECMWF_AWS]
 _root = {"ok": None}
 ECMWF_LIVE = "https://data.ecmwf.int/forecasts"
 GFS_AWS = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
