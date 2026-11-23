@@ -296,51 +296,30 @@ def do_era5(a, b, out, have):
 
 
 def do_ybprova(codes, out):
+    """Quali codici YB esistono: la classifica in testo, 8 richieste alla volta, 20 secondi al massimo ciascuna."""
     import requests
+    from concurrent.futures import ThreadPoolExecutor
     os.makedirs(out, exist_ok=True)
-    rows = []
-    for code in [c.strip() for c in codes.split(",") if c.strip()]:
+    def one(code):
         try:
-            r = requests.get(f"https://yb.tl/l/{code}", timeout=60, headers=bg.UA)
+            r = requests.get(f"https://yb.tl/l/{code}", timeout=20, headers=bg.UA)
             txt = r.text if r.status_code == 200 else ""
             ok = r.status_code == 200 and "Rank" in txt and len(txt) > 300
             heads = [l.strip() for l in txt.splitlines() if l.strip() and not l[:1].isdigit() and "," not in l and not l.startswith("THESE")][:12]
             n = sum(1 for l in txt.splitlines() if l[:1].isdigit())
-            rows.append(f"{code}\t{r.status_code}\t{'si' if ok else 'no'}\t{n}\t{' | '.join(heads)}")
-            print(rows[-1])
+            return f"{code}\t{r.status_code}\t{'si' if ok else 'no'}\t{n}\t{' | '.join(heads)}"
         except Exception as e:
-            rows.append(f"{code}\terr\tno\t0\t{e}"); print(rows[-1])
-        time.sleep(0.3)
+            return f"{code}\terr\tno\t0\t{type(e).__name__}"
+    cs = [c.strip() for c in codes.split(",") if c.strip()]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        rows = list(pool.map(one, cs))
+    for r in rows:
+        if "\tsi\t" in r:
+            print(r)
     path = os.path.join(out, f"yb_prova_{dt.datetime.utcnow():%Y%m%d%H%M%S}.tsv")
     open(path, "w").write("codice\thttp\tesiste\trighe\tclassi\n" + "\n".join(rows) + "\n")
     publish(path, "archivio-misure", "Misure per il banco di prova", "Misure per il banco di prova.")
     return True
-
-
-def probe_rda():
-    """Come si arriva a GFS 2015-2021 su NSF NCAR: ritaglio THREDDS (uno alla volta), DAP, file interi (dimensione)."""
-    import requests
-    f = "d084001/2019/20190617/gfs.0p25.2019061700.f003.grib2"
-    tries = [
-        ("ncss uno", f"{RDA}/{f}?var=u-component_of_wind_height_above_ground&{box_q()}&vertCoord=10&accept=netcdf3"),
-        ("ncss senza vertCoord", f"{RDA}/{f}?var=u-component_of_wind_height_above_ground&{box_q()}&accept=netcdf3"),
-        ("ncss dataset.xml", f"{RDA}/{f}/dataset.xml"),
-        ("dap4 dmr", f"https://thredds.rda.ucar.edu/thredds/dap4/files/g/{f}.dmr.xml"),
-        ("dodsC dds", f"https://thredds.rda.ucar.edu/thredds/dodsC/files/g/{f}.dds"),
-        ("https rda", f"https://data.rda.ucar.edu/{f}"),
-        ("https osdf", f"https://osdf-director.osg-htc.org/ncar/gdex/{f}"),
-        ("https gdex", f"https://data.gdex.ucar.edu/{f}"),
-        ("tds gdex ncss", f"https://tds.gdex.ucar.edu/thredds/ncss/grid/files/g/{f}?var=u-component_of_wind_height_above_ground&{box_q()}&vertCoord=10&accept=netcdf3"),
-    ]
-    for name, u in tries:
-        try:
-            r = requests.get(u, timeout=120, headers=bg.UA, stream=True)
-            n = r.headers.get("Content-Length"); head = next(r.iter_content(400), b"")
-            print(f"{name}: HTTP {r.status_code}, lunghezza {n}, inizio {head[:160]!r}")
-            r.close()
-        except Exception as e:
-            print(f"{name}: {e}")
-        time.sleep(2)
 
 
 def one_gfs(run, out):
