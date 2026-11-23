@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       cosa:
-        description: "Fonti, separate da virgole: ecmwf, gfs, ens, ascat, metar, boe, yb, prova, prova-boe"
+        description: "Fonti, separate da virgole: ecmwf, gfs, ens, era5, ascat, metar, boe, yb, ybprova, prova, prova-boe"
         type: string
         default: "prova"
       da:
@@ -57,7 +57,7 @@ jobs:
           a = dt.date.fromisoformat(os.environ["A"]) if os.environ.get("A") else oggi
           lavori = []
           for c in cosa:
-              if c in ("prova", "prova-boe", "yb"):
+              if c in ("prova", "prova-boe", "yb", "ybprova"):
                   lavori.append({"cosa": c, "da": str(da), "a": str(a)}); continue
               d = da
               while d <= a:                      # un lavoro per mese
@@ -130,6 +130,14 @@ jobs:
       - name: Tracciati YB
         if: matrix.cosa == 'yb'
         run: python tools/storico.py --yb "${{ inputs.yb }}" --out yb
+
+      - name: Prova dei codici YB
+        if: matrix.cosa == 'ybprova'
+        run: python tools/storico.py --ybprova "${{ inputs.yb }}" --out yb
+
+      - name: ERA5
+        if: matrix.cosa == 'era5'
+        run: python tools/storico.py --era5 ${{ matrix.da }} ${{ matrix.a }} --out storico --have nomi.txt
 
       - name: Boe
         if: matrix.cosa == 'boe'
