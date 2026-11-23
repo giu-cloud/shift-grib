@@ -6,6 +6,9 @@ I dati sono quelli dei centri che li producono, ritagliati e convertiti, **senza
 
 ## Release
 - **`gribs`**: le ultime 8 corse di ogni modello, file interi `<modello>_<AAAAMMGGHH>.grb2`.
+  - Dal 23/11/2026 anche il profilo verticale per Lens: `profilo-ecmwf_<corsa>.grb2` e `profilo-icon-eu_<corsa>.grb2`.
+  - Dentro: temperatura, quota geopotenziale (gpm) e vento u e v a 1000, 925, 850 e 700 hPa (ICON-EU anche 950 e 900), più la temperatura a 2 m.
+  - Maglia 0,25°, passo di 3 ore fino a 72 e di 6 dopo, area 34-46 N, 2 W-20 E (variabile `PROFILE_BOX`).
 - **`tiles`**: l'ultima corsa completa dei modelli fini, tagliata a quadratini fissi.
   - Il lato è di 1° per icon-2i e arome, di 2° per icon-eu, arpege, ecmwf-0p1 e cmems.
   - Nome: `<modello>_<AAAAMMGGHH>_t<lato>_<N|S><LL>_<E|W><LLL>.grb2`, dove l'angolo sud-ovest è in gradi interi.
@@ -14,7 +17,11 @@ I dati sono quelli dei centri che li producono, ritagliati e convertiti, **senza
 - **`archivio-AAAA-MM`**: tutte le corse del mese. Non si cancella mai e serve al banco di prova.
 - **`archivio-ovest-AAAA-MM`** (dal 22/11/2026): le stesse corse di ECMWF 0,25 e 0,1, ICON-EU, GFS, AROME e ARPEGE ritagliate sul Mediterraneo occidentale (36-44,5 N, 2 W-10 E: Barcellona, Valencia, Baleari), con nomi `<modello>-ovest_<corsa>.grb2`. Solo per il banco di prova: non sono in `gribs` né in `tiles`. L'area si cambia con la variabile `GRIB_EXTRA`.
 
-- **`satellite`** (dal 22/11/2026): il vento misurato dai satelliti nelle ultime 72 ore, un file per passaggio `scat_<satellite>_<AAAAMMGGHHMM>.scw.gz` (formato SCW1, descritto in `tools/satellite.py`), con `indice.json`. Si aggiorna ogni tre ore con il lavoro "Vento dal satellite".
+- **`satellite`** (dal 22/11/2026): il vento misurato dai satelliti nelle ultime 72 ore, un file per passaggio `scat_<satellite>_<AAAAMMGGHHMM>.scw.gz` (formato SCW1, descritto in `tools/satellite.py`), con `indice.json`. Si aggiorna ogni ora con il lavoro "Vento dal satellite" (ogni tre ore fino al 23/11/2026).
+  - **Aree chieste dall'app** (dal 23/11/2026): oltre al Mediterraneo, fino a 5 aree, ciascuna per al più 90 giorni.
+    - L'app le aggiunge e le toglie avviando il lavoro "Vento dal satellite, aree dell'app" (`satellite_area.yml`). L'elenco è `aree_satellite.json` nella stessa release.
+    - I passaggi delle altre aree si chiamano `scat_<area>_<satellite>_<AAAAMMGGHHMM>.scw.gz`.
+    - Nell'indice: `areas` (con il Mediterraneo, id `med`), `refused` (richieste rifiutate, per 3 giorni) e, per ogni passaggio, `area`.
 - **`archivio-satellite-AAAA-MM`**: tutti i passaggi del mese, per il banco di prova. Non si cancella mai.
 
 ## Modelli, fonti e licenze

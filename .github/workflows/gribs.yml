@@ -6,6 +6,8 @@ name: Aggiorna i GRIB
 #   - release tiles: l'ultima corsa dei modelli fini tagliata a quadratini di 1 o 2 gradi. Il vento a 10 m è nei quadratini
 #     <modello>_<corsa>_t<lato>_..., in GRIB2 5.3 a un decimo di m/s; raffiche e pressione nei gemelli ..._t<lato>x_...;
 #   - release archivio-AAAA-MM: tutte le corse del mese, non si cancella mai (serve al banco di prova);
+#   - nella release gribs anche il profilo verticale per Lens (dal 23/11/2026): profilo-ecmwf_<corsa>.grb2 e
+#     profilo-icon-eu_<corsa>.grb2, temperatura, quota geopotenziale e vento a 1000-700 hPa e temperatura a 2 m, a 0,25°;
 #   - release archivio-<area>-AAAA-MM: le aree in più del banco di prova (variabile GRIB_EXTRA, di default il Mediterraneo
 #     occidentale), ritagliate dagli stessi dati. Solo archivio: niente gribs, niente quadratini, l'app non le vede.
 # Deposito pubblico: solo dati aperti, ognuno con la sua fonte e licenza (vedi README). youmeteo resta nel deposito
@@ -35,7 +37,7 @@ jobs:
   gribs:
     runs-on: ubuntu-latest
     # tetto di sicurezza: un giro normale dura pochi minuti
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       GH_TOKEN: ${{ github.token }}
       GRIB_BOX: ${{ vars.GRIB_BOX || '34,46,5,20' }}
@@ -64,6 +66,15 @@ jobs:
         env:
           GRIB_HAVE: have.txt
         run: python tools/build_gribs.py --out gribs --models ecmwf,ecmwf-0p1,icon-eu,icon-2i,gfs,arome,arpege,ecmwf-wave,gfs-wave
+
+      # Profilo verticale per Lens (stabilità dell'aria sopra i rilievi): file a parte, area PROFILE_BOX. Se non riesce,
+      # il vento è già pronto e si pubblica lo stesso.
+      - name: Profilo verticale (ECMWF e ICON-EU)
+        continue-on-error: true
+        env:
+          GRIB_HAVE: have.txt
+          PROFILE_BOX: ${{ vars.PROFILE_BOX || '34,46,-2,20' }}
+        run: python tools/build_gribs.py --out gribs --models profilo-ecmwf,profilo-icon-eu
 
       # Correnti e onde del Mediterraneo da Copernicus Marine: serve un account gratuito su marine.copernicus.eu.
       # Credenziali: Settings, Secrets and variables, Actions, Secrets: CMEMS_USER e CMEMS_PASS. Senza, il passo si salta.
@@ -100,7 +111,7 @@ jobs:
           gh release view gribs > /dev/null 2>&1 || gh release create gribs --title "GRIB" --notes "File GRIB ritagliati dei modelli aperti, aggiornati ogni tre ore. Fonti e licenze nel README del deposito."
           gh release upload gribs gribs/*.grb* --clobber
           # si tengono le ultime 8 corse di ogni modello (servono allo storico), le più vecchie si tolgono
-          for m in ecmwf ecmwf-0p1 icon-eu icon-2i gfs arome arpege ecmwf-wave gfs-wave cmems-cur cmems-wav; do
+          for m in ecmwf ecmwf-0p1 icon-eu icon-2i gfs arome arpege ecmwf-wave gfs-wave cmems-cur cmems-wav profilo-ecmwf profilo-icon-eu; do
             gh release view gribs --json assets -q '.assets[].name' | grep "^${m}_" | sort -r | tail -n +9 | while read n; do
               gh release delete-asset gribs "$n" -y || true
             done

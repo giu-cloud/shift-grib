@@ -1,0 +1,85 @@
+name: Vento dal satellite, aree dell'app
+
+# Aree chieste dall'app Shift ("Satellite for your areas", dalla 0.49): aggiunge, aggiorna o toglie un'area nell'elenco
+# aree_satellite.json della release satellite, poi fa partire il giro del satellite (satellite.yml), che per un'area nuova
+# prende anche i passaggi delle 72 ore prima e scrive le aree nell'indice. Un rifiuto (area troppo grande, troppe aree,
+# data oltre 90 giorni...) non torna con la risposta di GitHub (204 appena in coda): finisce in "refused" nell'indice,
+# per 3 giorni. Limiti e formato in tools/satellite.py. Ingressi tutti stringhe, come li manda l'app:
+#   action add|remove, id (minuscole, cifre, trattini, al più 24), title (al più 60), box "lat0,lat1,lon0,lon1",
+#   until AAAA-MM-GG (l'ultimo giorno UTC in cui tenerla).
+# L'app lo avvia con la sua chiave (POST .../actions/workflows/satellite_area.yml/dispatches): le serve il permesso
+# Actions, Read and write, su shift-grib.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "add oppure remove"
+        type: string
+        required: true
+      id:
+        description: "Identificativo dell'area (minuscole, cifre, trattini)"
+        type: string
+        required: true
+      title:
+        description: "Nome per la carta"
+        type: string
+        default: ""
+      box:
+        description: "lat0,lat1,lon0,lon1"
+        type: string
+        default: ""
+      until:
+        description: "Ultimo giorno (AAAA-MM-GG, UTC)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  actions: write
+
+# richieste in fila, mai annullate: ognuna cambia l'elenco
+concurrency:
+  group: satellite-aree
+  cancel-in-progress: false
+
+jobs:
+  area:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SAT_BOX: ${{ vars.SAT_BOX || '30,46.5,-6,37' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Strumenti
+        run: pip install numpy requests
+
+      - name: Elenco delle aree
+        run: |
+          if gh release view satellite --json assets -q '.assets[].name' | grep -qx aree_satellite.json; then
+            gh release download satellite -p aree_satellite.json -D .
+          else
+            echo '{}' > aree_satellite.json
+          fi
+
+      - name: Richiesta
+        env:
+          A_ACTION: ${{ inputs.action }}
+          A_ID: ${{ inputs.id }}
+          A_TITLE: ${{ inputs.title }}
+          A_BOX: ${{ inputs.box }}
+          A_UNTIL: ${{ inputs.until }}
+        run: |
+          python tools/satellite.py --area-request aree_satellite.json "$A_ACTION" "$A_ID" "$A_TITLE" "$A_BOX" "$A_UNTIL"
+          cat aree_satellite.json
+
+      - name: Pubblica l'elenco e fa partire il giro
+        run: |
+          gh release upload satellite aree_satellite.json --clobber
+          gh workflow run satellite.yml --ref main
