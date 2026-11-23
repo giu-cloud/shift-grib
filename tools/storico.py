@@ -294,6 +294,32 @@ def do_ybprova(codes, out):
     return True
 
 
+def probe_rda():
+    """Come si arriva a GFS 2015-2021 su NSF NCAR: ritaglio THREDDS (uno alla volta), DAP, file interi (dimensione)."""
+    import requests
+    f = "d084001/2019/20190617/gfs.0p25.2019061700.f003.grib2"
+    tries = [
+        ("ncss uno", f"{RDA}/{f}?var=u-component_of_wind_height_above_ground&{box_q()}&vertCoord=10&accept=netcdf3"),
+        ("ncss senza vertCoord", f"{RDA}/{f}?var=u-component_of_wind_height_above_ground&{box_q()}&accept=netcdf3"),
+        ("ncss dataset.xml", f"{RDA}/{f}/dataset.xml"),
+        ("dap4 dmr", f"https://thredds.rda.ucar.edu/thredds/dap4/files/g/{f}.dmr.xml"),
+        ("dodsC dds", f"https://thredds.rda.ucar.edu/thredds/dodsC/files/g/{f}.dds"),
+        ("https rda", f"https://data.rda.ucar.edu/{f}"),
+        ("https osdf", f"https://osdf-director.osg-htc.org/ncar/gdex/{f}"),
+        ("https gdex", f"https://data.gdex.ucar.edu/{f}"),
+        ("tds gdex ncss", f"https://tds.gdex.ucar.edu/thredds/ncss/grid/files/g/{f}?var=u-component_of_wind_height_above_ground&{box_q()}&vertCoord=10&accept=netcdf3"),
+    ]
+    for name, u in tries:
+        try:
+            r = requests.get(u, timeout=120, headers=bg.UA, stream=True)
+            n = r.headers.get("Content-Length"); head = next(r.iter_content(400), b"")
+            print(f"{name}: HTTP {r.status_code}, lunghezza {n}, inizio {head[:160]!r}")
+            r.close()
+        except Exception as e:
+            print(f"{name}: {e}")
+        time.sleep(2)
+
+
 def one_gfs(run, out):
     if run < dt.datetime(2021, 3, 1):
         return one_gfs_rda(run, out)
@@ -573,6 +599,7 @@ def main():
     ok = True
     if x.prova:
         probe()
+        probe_rda()
     if x.prova_boe:
         do_boe("2026-11-01", "2026-11-30", x.out, probe=True)
     for kind in ("ecmwf", "gfs", "ens"):
