@@ -11,6 +11,11 @@ name: Archivio storico e misure per il banco
 on:
   schedule:
     - cron: "20 7 * * *"
+  # Coda di richieste in un file (24/11: l'avvio a mano via API rispondeva HTTP 500): ogni modifica di
+  # richieste/storico.json su main avvia i lavori elencati, nello stesso formato degli input qui sotto.
+  push:
+    branches: [main]
+    paths: ["richieste/storico.json"]
   workflow_dispatch:
     inputs:
       cosa:
@@ -38,7 +43,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: storico-${{ github.event_name }}-${{ inputs.cosa }}-${{ inputs.da }}-${{ inputs.area }}
+  group: storico-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || format('{0}-{1}-{2}', inputs.cosa, inputs.da, inputs.area) }}
   cancel-in-progress: false
 
 jobs:
@@ -47,28 +52,39 @@ jobs:
     outputs:
       lavori: ${{ steps.p.outputs.lavori }}
     steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
       - id: p
         env:
+          EVENTO: ${{ github.event_name }}
           COSA: ${{ github.event_name == 'schedule' && 'metar,ens,boe' || inputs.cosa }}
           DA: ${{ inputs.da }}
           A: ${{ inputs.a }}
+          YB: ${{ inputs.yb }}
+          AREA: ${{ inputs.area }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import datetime as dt, json, os
-          cosa = [c.strip() for c in os.environ["COSA"].split(",") if c.strip()]
           oggi = dt.date.today()
-          da = dt.date.fromisoformat(os.environ["DA"]) if os.environ.get("DA") else oggi - dt.timedelta(days=2)
-          a = dt.date.fromisoformat(os.environ["A"]) if os.environ.get("A") else oggi
+          if os.environ["EVENTO"] == "push":
+              richieste = json.load(open("richieste/storico.json"))["richieste"]
+          else:
+              richieste = [{"cosa": os.environ.get("COSA", ""), "da": os.environ.get("DA", ""), "a": os.environ.get("A", ""),
+                            "yb": os.environ.get("YB", ""), "area": os.environ.get("AREA", "")}]
           lavori = []
-          for c in cosa:
-              if c in ("prova", "prova-boe", "yb", "ybprova"):
-                  lavori.append({"cosa": c, "da": str(da), "a": str(a)}); continue
-              d = da
-              while d <= a:                      # un lavoro per mese
-                  fine = min(a, (d.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1))
-                  lavori.append({"cosa": c, "da": str(d), "a": str(fine)})
-                  d = fine + dt.timedelta(days=1)
-          print("lavori=" + json.dumps(lavori))
+          for r in richieste:
+              da = dt.date.fromisoformat(r["da"]) if r.get("da") else oggi - dt.timedelta(days=2)
+              a = dt.date.fromisoformat(r["a"]) if r.get("a") else oggi
+              extra = {"yb": r.get("yb", ""), "area": r.get("area", "")}
+              for c in [c.strip() for c in r["cosa"].split(",") if c.strip()]:
+                  if c in ("prova", "prova-boe", "yb", "ybprova"):
+                      lavori.append({"cosa": c, "da": str(da), "a": str(a), **extra}); continue
+                  d = da
+                  while d <= a:                      # un lavoro per mese
+                      fine = min(a, (d.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1))
+                      lavori.append({"cosa": c, "da": str(d), "a": str(fine), **extra})
+                      d = fine + dt.timedelta(days=1)
+          print("lavori=" + json.dumps(lavori[:256]))
           EOF
 
   lavoro:
@@ -82,8 +98,8 @@ jobs:
         include: ${{ fromJson(needs.piano.outputs.lavori) }}
     env:
       GH_TOKEN: ${{ github.token }}
-      GRIB_BOX: ${{ inputs.area == 'egeo' && '34,42,19,30' || vars.GRIB_BOX || '34,46,5,20' }}
-      ARCHIVIO: ${{ inputs.area == 'egeo' && 'archivio-egeo' || 'archivio' }}
+      GRIB_BOX: ${{ matrix.area == 'egeo' && '34,42,19,30' || vars.GRIB_BOX || '34,46,5,20' }}
+      ARCHIVIO: ${{ matrix.area == 'egeo' && 'archivio-egeo' || 'archivio' }}
       SAT_BOX: ${{ vars.SAT_BOX || '30,46.5,-6,37' }}
       CMEMS_USER: ${{ secrets.CMEMS_USER }}
       CMEMS_PASS: ${{ secrets.CMEMS_PASS }}
@@ -134,11 +150,11 @@ jobs:
 
       - name: Tracciati YB
         if: matrix.cosa == 'yb'
-        run: python tools/storico.py --yb "${{ inputs.yb }}" --out yb
+        run: python tools/storico.py --yb "${{ matrix.yb }}" --out yb
 
       - name: Prova dei codici YB
         if: matrix.cosa == 'ybprova'
-        run: python tools/storico.py --ybprova "${{ inputs.yb }}" --out yb
+        run: python tools/storico.py --ybprova "${{ matrix.yb }}" --out yb
 
       - name: ERA5
         if: matrix.cosa == 'era5'
