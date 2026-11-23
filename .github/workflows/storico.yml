@@ -29,12 +29,16 @@ on:
         description: "Per yb: codici delle regate (es. rmsr2025,pm2025)"
         type: string
         default: ""
+      area:
+        description: "Area dei campi: vuoto = Mediterraneo centrale (release archivio-AAAA-MM), egeo = Egeo (archivio-egeo-AAAA-MM)"
+        type: string
+        default: ""
 
 permissions:
   contents: write
 
 concurrency:
-  group: storico-${{ github.event_name }}-${{ inputs.cosa }}-${{ inputs.da }}
+  group: storico-${{ github.event_name }}-${{ inputs.cosa }}-${{ inputs.da }}-${{ inputs.area }}
   cancel-in-progress: false
 
 jobs:
@@ -78,7 +82,8 @@ jobs:
         include: ${{ fromJson(needs.piano.outputs.lavori) }}
     env:
       GH_TOKEN: ${{ github.token }}
-      GRIB_BOX: ${{ vars.GRIB_BOX || '34,46,5,20' }}
+      GRIB_BOX: ${{ inputs.area == 'egeo' && '34,42,19,30' || vars.GRIB_BOX || '34,46,5,20' }}
+      ARCHIVIO: ${{ inputs.area == 'egeo' && 'archivio-egeo' || 'archivio' }}
       SAT_BOX: ${{ vars.SAT_BOX || '30,46.5,-6,37' }}
       CMEMS_USER: ${{ secrets.CMEMS_USER }}
       CMEMS_PASS: ${{ secrets.CMEMS_PASS }}
@@ -105,10 +110,10 @@ jobs:
 
       - name: File già pubblicati
         run: |
-          : > nomi.txt
-          for r in $(gh release list --limit 300 --json tagName -q '.[].tagName' | grep '^archivio-' || true); do
-            gh release view "$r" --json assets -q '.assets[].name' >> nomi.txt || true
-          done
+          # Una sola richiesta per pagina (23/11 notte: una per release faceva superare il limite di richieste con molti
+          # lavori in parallelo). Solo le release dell'area di questo lavoro.
+          gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name | startswith(\"$ARCHIVIO-\")) | select(\"$ARCHIVIO\" != \"archivio\" or (.tag_name | startswith(\"archivio-egeo-\") | not)) | .assets[].name" > nomi.txt || : > nomi.txt
           wc -l nomi.txt
 
       - name: Prova delle fonti
@@ -148,11 +153,15 @@ jobs:
         run: |
           python tools/satellite.py --backfill ${{ matrix.da }} ${{ matrix.a }} --out rec --have nomi.txt
           note="Vento misurato dai diffusometri ASCAT su Metop-B e Metop-C: prodotto costiero a 12,5 km di EUMETSAT OSI SAF, elaborato dal KNMI. Licenza CC BY 4.0, copyright EUMETSAT. Formato SCW1, descritto in tools/satellite.py."
+          fatta=""
           for f in rec/*.scw.gz; do
             [ -e "$f" ] || continue
             d=$(basename "$f" | sed -E 's/^scat_[a-z0-9]+_([0-9]{4})([0-9]{2}).*/\1-\2/')
             tag="archivio-satellite-$d"
-            gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --latest=false --title "Archivio vento dal satellite $d" --notes "Tutti i passaggi del mese, per il banco di prova. $note"
+            if [ "$tag" != "$fatta" ]; then        # una sola verifica per release, non una per file
+              gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --latest=false --title "Archivio vento dal satellite $d" --notes "Tutti i passaggi del mese, per il banco di prova. $note" || true
+              fatta="$tag"
+            fi
             for k in $(seq 1 14); do
               gh release upload "$tag" "$f" --clobber && break
               echo "caricamento non riuscito (limite di GitHub?), riprovo tra 5 minuti"; sleep 300
