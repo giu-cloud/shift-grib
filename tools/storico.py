@@ -18,6 +18,8 @@ banco_di_prova/richiesta_app_23_11_sera.md (Project "Software regatta").
   --boe DA A     anemometri di boe e piattaforme del Mediterraneo (Copernicus Marine, prodotto in situ NRT del
                  Mediterraneo; account nei segreti CMEMS_USER e CMEMS_PASS). Un CSV per mese: boe_AAAA-MM.csv, release
                  archivio-misure.
+  --yb CODICI    tracciati YB di regate passate (B4), codici separati da virgole (per esempio rmsr2025,pm2025): il KML con
+                 tutti i tracciati (https://yb.tl/<codice>.kml) e la classifica in testo, nella release archivio-misure.
   --prova        stampa che cosa c'è sulle fonti (cartelle di Amazon, file delle boe) senza scaricare dati.
 
 Date nel formato AAAA-MM-GG, estremi compresi. --have FILE: nomi già pubblicati, uno per riga (non si rifanno).
@@ -342,6 +344,28 @@ def finish_boe(rows, out):
     return True
 
 
+def do_yb(codes, out):
+    import requests
+    os.makedirs(out, exist_ok=True)
+    ok = True
+    for code in [c.strip() for c in codes.split(",") if c.strip()]:
+        for url, name in ((f"https://yb.tl/{code}.kml", f"yb_{code}.kml"), (f"https://yb.tl/l/{code}", f"yb_{code}_classifica.txt")):
+            try:
+                r = requests.get(url, timeout=300, headers=bg.UA)
+                print(f"yb {url}: HTTP {r.status_code}, {len(r.content)} byte")
+                if r.status_code != 200 or len(r.content) < 200:
+                    ok = False; continue
+                path = os.path.join(out, name)
+                with open(path, "wb") as f:
+                    f.write(r.content)
+                publish(path, "archivio-misure", "Misure per il banco di prova",
+                        "METAR dall'archivio dell'Iowa Environmental Mesonet (Iowa State University), anemometri in mare da "
+                        "Copernicus Marine, tracciati delle regate da YB Tracking. Per il banco di prova.")
+            except Exception as e:
+                print(f"yb {url}: {e}"); ok = False
+    return ok
+
+
 def probe():
     """Che cosa c'è su Amazon: una corsa d'estate 2025 e una di questo mese, oper ed enfo."""
     for run in (dt.datetime(2025, 7, 1, 0), dt.datetime.now(dt.timezone.utc).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0) - dt.timedelta(days=3)):
@@ -371,6 +395,7 @@ def main():
     ap = argparse.ArgumentParser()
     for k in ("ecmwf", "gfs", "ens", "metar", "boe"):
         ap.add_argument(f"--{k}", nargs=2, metavar=("DA", "A"))
+    ap.add_argument("--yb", default="")
     ap.add_argument("--prova", action="store_true")
     ap.add_argument("--prova-boe", action="store_true")
     ap.add_argument("--out", default="storico")
@@ -389,6 +414,8 @@ def main():
         ok &= do_metar(*x.metar, x.out)
     if x.boe:
         ok &= do_boe(*x.boe, x.out)
+    if x.yb:
+        ok &= do_yb(x.yb, x.out)
     return 0 if ok else 1
 
 
