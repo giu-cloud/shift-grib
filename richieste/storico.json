@@ -1,156 +1,85 @@
 {
- "nota": "Coda per storico.yml: ogni modifica di questo file su main avvia i lavori. Regate vere, 24/11/2026.",
+ "nota": "Coda per storico.yml: ogni modifica di questo file su main avvia i lavori. Regate vere, seconda ondata (24/11/2026).",
  "richieste": [
   {
-   "cosa": "yb",
-   "da": "2025-01-04",
-   "a": "2025-01-04",
-   "yb": "151miglia2022,151miglia2025,aegean6002021,lungabolina2024,pm2019,roma2018,roma2020,romagiraglia2019,tregolfi2018",
-   "area": ""
-  },
-  {
-   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf,ens",
-   "da": "2024-05-27",
-   "a": "2024-06-02",
+   "cosa": "era5,gefs,ascat,metar,gfs",
+   "da": "2022-05-30",
+   "a": "2022-06-05",
    "yb": "",
    "area": "",
-   "regata": "151miglia2024"
+   "regata": "151miglia2022"
   },
   {
-   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf,ens",
-   "da": "2025-09-23",
-   "a": "2025-09-29",
+   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf",
+   "da": "2025-05-27",
+   "a": "2025-06-02",
    "yb": "",
    "area": "",
-   "regata": "aeolianrace2025"
+   "regata": "151miglia2025"
   },
   {
-   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf,ens",
-   "da": "2025-04-23",
-   "a": "2025-04-28",
+   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf",
+   "da": "2024-04-23",
+   "a": "2024-04-28",
    "yb": "",
    "area": "",
-   "regata": "lungabolina2025"
+   "regata": "lungabolina2024"
   },
   {
-   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf,ens",
-   "da": "2023-05-09",
-   "a": "2023-05-15",
+   "cosa": "era5,gefs,ascat,metar",
+   "da": "2019-08-18",
+   "a": "2019-08-27",
    "yb": "",
    "area": "",
-   "regata": "tregolfi23"
+   "regata": "pm2019"
   },
   {
-   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf,ens",
-   "da": "2024-05-14",
-   "a": "2024-05-20",
+   "cosa": "era5,gefs,ascat,metar",
+   "da": "2018-04-06",
+   "a": "2018-04-12",
    "yb": "",
    "area": "",
-   "regata": "tregolfi24"
+   "regata": "roma2018"
   },
   {
-   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf,ens",
-   "da": "2025-05-13",
-   "a": "2025-05-19",
+   "cosa": "era5,gefs,ascat,metar",
+   "da": "2020-09-17",
+   "a": "2020-09-24",
    "yb": "",
    "area": "",
-   "regata": "tregolfi25"
+   "regata": "roma2020"
+  },
+  {
+   "cosa": "era5,gefs,ascat,metar",
+   "da": "2019-09-23",
+   "a": "2019-09-30",
+   "yb": "",
+   "area": "",
+   "regata": "romagiraglia2019"
+  },
+  {
+   "cosa": "era5,gefs,ascat,metar",
+   "da": "2018-05-08",
+   "a": "2018-05-14",
+   "yb": "",
+   "area": "",
+   "regata": "tregolfi2018"
   },
   {
    "cosa": "era5,gefs,gfs",
-   "da": "2022-07-07",
-   "a": "2022-07-18",
+   "da": "2021-07-01",
+   "a": "2021-07-14",
    "yb": "",
    "area": "egeo",
-   "regata": "aegean6002022"
+   "regata": "aegean6002021"
   },
   {
    "cosa": "ascat,metar",
-   "da": "2022-07-07",
-   "a": "2022-07-18",
+   "da": "2021-07-01",
+   "a": "2021-07-14",
    "yb": "",
    "area": "",
-   "regata": "aegean6002022"
-  },
-  {
-   "cosa": "era5,gefs,gfs,ecmwf,ens",
-   "da": "2023-07-06",
-   "a": "2023-07-15",
-   "yb": "",
-   "area": "egeo",
-   "regata": "aegean6002023"
-  },
-  {
-   "cosa": "ascat,metar",
-   "da": "2023-07-06",
-   "a": "2023-07-15",
-   "yb": "",
-   "area": "",
-   "regata": "aegean6002023"
-  },
-  {
-   "cosa": "era5,gefs,gfs,ecmwf,ens",
-   "da": "2024-07-04",
-   "a": "2024-07-13",
-   "yb": "",
-   "area": "egeo",
-   "regata": "aegean6002024"
-  },
-  {
-   "cosa": "ascat,metar",
-   "da": "2024-07-04",
-   "a": "2024-07-13",
-   "yb": "",
-   "area": "",
-   "regata": "aegean6002024"
-  },
-  {
-   "cosa": "era5,gefs,gfs,ecmwf,ens",
-   "da": "2025-07-03",
-   "a": "2025-07-13",
-   "yb": "",
-   "area": "egeo",
-   "regata": "aegean6002025"
-  },
-  {
-   "cosa": "ascat,metar",
-   "da": "2025-07-03",
-   "a": "2025-07-13",
-   "yb": "",
-   "area": "",
-   "regata": "aegean6002025"
-  },
-  {
-   "cosa": "era5",
-   "da": "2018-08-18",
-   "a": "2018-08-28",
-   "yb": "",
-   "area": "",
-   "regata": "pm2018"
-  },
-  {
-   "cosa": "era5",
-   "da": "2024-08-17",
-   "a": "2024-08-26",
-   "yb": "",
-   "area": "",
-   "regata": "pm2024"
-  },
-  {
-   "cosa": "gefs",
-   "da": "2018-05-28",
-   "a": "2018-06-03",
-   "yb": "",
-   "area": "",
-   "regata": "151miglia2018"
-  },
-  {
-   "cosa": "ens",
-   "da": "2024-08-17",
-   "a": "2024-08-26",
-   "yb": "",
-   "area": "",
-   "regata": "pm2024"
+   "regata": "aegean6002021"
   }
  ]
 }
