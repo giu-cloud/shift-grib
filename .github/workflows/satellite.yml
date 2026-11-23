@@ -8,11 +8,14 @@ name: Vento dal satellite
 #   - release archivio-satellite-AAAA-MM: tutti i passaggi del mese, per il banco di prova. Non si cancella mai.
 # KNMI: il segreto KNMI_API_KEY (chiave personale gratuita); senza, la chiave anonima pubblicata dal KNMI per i client
 # pubblici, con limiti condivisi. Senza account Earthdata resta solo il KNMI. L'area si cambia con la variabile SAT_BOX.
+# Aree chieste dall'app (dal 23/11/2026): l'elenco aree_satellite.json nella release satellite, aggiornato dal workflow
+# satellite_area.yml, che poi fa partire questo giro. Ogni orbita si scarica una volta e si ritaglia per tutte le aree;
+# un'area appena aggiunta prende anche le 72 ore prima. Dopo la data 'until' l'area esce dall'elenco e dall'indice.
 
 on:
   schedule:
-    # ogni tre ore, mezz'ora dopo il giro dei GRIB
-    - cron: "50 */3 * * *"
+    # ogni ora (dal 23/11/2026; prima ogni tre): un passaggio è a PO.DAAC 1,5-2,5 ore dopo l'orbita, e non deve aspettare
+    - cron: "50 * * * *"
   workflow_dispatch:
     inputs:
       prova:
@@ -90,13 +93,19 @@ jobs:
             gh release upload "$tag" "$f" --clobber
           done
 
-      - name: Indice attuale
+      - name: Indice attuale e aree
         if: inputs.recupera_da == ''
-        run: gh release download satellite -p indice.json -D . || echo "nessun indice, primo giro"
+        run: |
+          gh release download satellite -p indice.json -D . || echo "nessun indice, primo giro"
+          if gh release view satellite --json assets -q '.assets[].name' | grep -qx aree_satellite.json; then
+            gh release download satellite -p aree_satellite.json -D .
+          else
+            echo '{}' > aree_satellite.json
+          fi
 
       - name: Passaggi nuovi
         if: inputs.recupera_da == ''
-        run: python tools/satellite.py --out sat --index indice.json ${{ (github.event_name == 'push' || inputs.prova) && '--probe' || '' }}
+        run: python tools/satellite.py --out sat --index indice.json --areas aree_satellite.json ${{ (github.event_name == 'push' || inputs.prova) && '--probe' || '' }}
 
       - name: Pubblica
         if: inputs.recupera_da == ''
@@ -105,13 +114,24 @@ jobs:
           gh release view satellite > /dev/null 2>&1 || gh release create satellite --latest=false --title "Vento dal satellite" --notes "Passaggi degli ultimi 3 giorni sul Mediterraneo e indice.json. $note"
           for f in sat/*.scw.gz; do
             [ -e "$f" ] || continue
-            d=$(basename "$f" | sed -E 's/^scat_[a-z0-9]+_([0-9]{4})([0-9]{2}).*/\1-\2/')
+            d=$(basename "$f" | sed -E 's/.*_([0-9]{4})([0-9]{2})[0-9]{6}\.scw\.gz$/\1-\2/')
             tag="archivio-satellite-$d"
             gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --latest=false --title "Archivio vento dal satellite $d" --notes "Tutti i passaggi del mese, per il banco di prova. $note"
             gh release upload "$tag" "$f" --clobber
             gh release upload satellite "$f" --clobber
           done
-          python tools/satellite.py --merge-index indice.json sat/nuovi.json indice_nuovo.json 3 > togliere.txt
+          # aree: si rilegge l'elenco appena prima (l'app può averlo cambiato durante il giro), si tolgono le scadute e il
+          # segno "backfill" di quelle servite
+          if gh release view satellite --json assets -q '.assets[].name' | grep -qx aree_satellite.json; then
+            gh release download satellite -p aree_satellite.json -O aree_ora.json --clobber
+          else
+            echo '{}' > aree_ora.json
+          fi
+          if python tools/satellite.py --area-finish aree_ora.json sat/fatte.txt | grep -q "changed=1"; then
+            cp aree_ora.json sat/aree_satellite.json
+            gh release upload satellite sat/aree_satellite.json --clobber
+          fi
+          python tools/satellite.py --merge-index indice.json sat/nuovi.json indice_nuovo.json 3 aree_ora.json > togliere.txt
           cp indice_nuovo.json sat/indice.json
           gh release upload satellite sat/indice.json --clobber
           while read -r n; do

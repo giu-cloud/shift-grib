@@ -89,8 +89,9 @@ def http_get(url, headers=None, tries=3, timeout=120):
     raise IOError(f"{url}: {last}")
 
 
-def crop_message(h, box):
-    """Ritaglia un campo su griglia regolare lat/lon. Restituisce un nuovo messaggio GRIB (bytes) o None."""
+def crop_message(h, box, stride=1):
+    """Ritaglia un campo su griglia regolare lat/lon. Restituisce un nuovo messaggio GRIB (bytes) o None.
+    Con [stride] > 1 tiene un punto ogni [stride] per lato (maglia più larga, per il profilo verticale)."""
     if ec.codes_get(h, "gridType") != "regular_ll":
         return None
     ni, nj = ec.codes_get(h, "Ni"), ec.codes_get(h, "Nj")
@@ -105,6 +106,8 @@ def crop_message(h, box):
     jj = np.where((lats >= latmin - 1e-6) & (lats <= latmax + 1e-6))[0]
     order = np.argsort(lons, kind="stable")
     ii = order[(lons[order] >= lonmin - 1e-6) & (lons[order] <= lonmax + 1e-6)]
+    if stride > 1:
+        jj, ii = jj[::stride], ii[::stride]
     if len(jj) < 2 or len(ii) < 2:
         return None
     vals = ec.codes_get_values(h).reshape(nj, ni)
@@ -118,6 +121,9 @@ def crop_message(h, box):
         ec.codes_set(c, "latitudeOfLastGridPointInDegrees", float(lats[jj[-1]]))
         ec.codes_set(c, "longitudeOfFirstGridPointInDegrees", float(lons[ii[0]] % 360.0))
         ec.codes_set(c, "longitudeOfLastGridPointInDegrees", float(lons[ii[-1]] % 360.0))
+        if stride > 1:
+            ec.codes_set(c, "iDirectionIncrementInDegrees", di * stride)
+            ec.codes_set(c, "jDirectionIncrementInDegrees", dj * stride)
         if np.any(sub == missing):
             ec.codes_set(c, "bitmapPresent", 1)
         ec.codes_set(c, "bitsPerValue", 12)
@@ -641,6 +647,108 @@ def build_youmeteo(box, out_dir):
     if not made:
         raise IOError("nessun pacchetto di youmeteo scaricato: vedi gli avvisi sopra")
     return made
+
+
+# ------------------------------------------------------------------------------------------------- profilo verticale
+# Per Lens nell'app (dalla 0.48): la stabilità dell'aria sopra i rilievi dal modello stesso, anche senza rete.
+# File a parte nella release gribs, accanto al vento: profilo-<modello>_<corsa>.grb2, con temperatura (0,0,0), quota
+# geopotenziale (0,3,5, gpm), vento u e v (0,2,2 e 0,2,3) sui livelli isobarici 1000, 925, 850, 700 hPa (ICON-EU anche
+# 950 e 900) e la temperatura a 2 m. Maglia 0,25° (ICON-EU sfoltito da 0,0625°), passo di 3 ore fino a 72, poi di 6.
+# Area: PROFILE_BOX (di default Mediterraneo centrale e occidentale, dove ci sono le aree di Lens).
+PROFILE_BOX = tuple(float(x) for x in os.environ.get("PROFILE_BOX", "34,46,-2,20").split(","))
+PROFILE_STEPS = list(range(0, 73, 3)) + list(range(78, 145, 6))
+G0 = 9.80665
+
+
+def build_profilo_ecmwf(box, out_dir):
+    """ECMWF IFS 0,25°, dati aperti: t, gh, u, v a 1000-925-850-700 hPa e 2t, dagli stessi file del vento."""
+    root = "https://data.ecmwf.int/forecasts"
+    def name(t, step, ext):
+        return f"{root}/{t:%Y%m%d}/{t:%H}z/ifs/0p25/oper/{t:%Y%m%d%H}0000-{step}h-oper-fc.{ext}"
+    runs = recent_runs(lambda t: len(http_get(name(t, 144, "index"), tries=1, timeout=30)) > 100, hours=(0, 12))
+    levels = {"1000", "925", "850", "700"}
+    def one(run):
+        def get_step(step):
+            parts = []
+            for line in http_get(name(run, step, "index")).decode().splitlines():
+                rec = json.loads(line)
+                pl = rec.get("levtype") == "pl" and rec.get("param") in ("t", "gh", "u", "v") and str(rec.get("levelist")) in levels
+                sfc = rec.get("levtype", "sfc") == "sfc" and rec.get("param") == "2t"
+                if pl or sfc:
+                    a, n = int(rec["_offset"]), int(rec["_length"])
+                    parts.append(http_get(name(run, step, "grib2"), headers={"Range": f"bytes={a}-{a + n - 1}"}))
+            return b"".join(parts)
+        msgs = []
+        for k in range(0, len(PROFILE_STEPS), WORKERS):
+            for raw in fetch_all([lambda s=s: get_step(s) for s in PROFILE_STEPS[k:k + WORKERS]]):
+                msgs += crop_bytes(raw, PROFILE_BOX)
+        return write(out_dir, "profilo-ecmwf", run, msgs)
+    return build_all("profilo-ecmwf", runs, one)
+
+
+def fi_to_gh(msg):
+    """Geopotenziale (0,3,4, m2/s2, come lo dà il DWD) in quota geopotenziale (0,3,5, gpm), come la vuole l'app."""
+    h = ec.codes_new_from_message(msg)
+    try:
+        if ec.codes_get(h, "parameterCategory") != 3 or ec.codes_get(h, "parameterNumber") != 4:
+            return msg
+        v = ec.codes_get_values(h)
+        miss = ec.codes_get(h, "missingValue")
+        ec.codes_set(h, "parameterNumber", 5)
+        ec.codes_set_values(h, np.where(v == miss, miss, v / G0))
+        return ec.codes_get_message(h)
+    finally:
+        ec.codes_release(h)
+
+
+def build_profilo_icon_eu(box, out_dir):
+    """ICON-EU (DWD, 0,0625° sfoltito a 0,25°): T, FI (in gh), U, V a 1000-950-925-900-850-700 hPa e T_2M."""
+    root = "https://opendata.dwd.de/weather/nwp/icon-eu/grib"
+    def pl(t, var, step, lev):
+        return f"{root}/{t:%H}/{var.lower()}/icon-eu_europe_regular-lat-lon_pressure-level_{t:%Y%m%d%H}_{step:03d}_{lev}_{var}.grib2.bz2"
+    def sl(t, var, step):
+        return f"{root}/{t:%H}/{var.lower()}/icon-eu_europe_regular-lat-lon_single-level_{t:%Y%m%d%H}_{step:03d}_{var}.grib2.bz2"
+    runs = recent_runs(lambda t: len(http_get(pl(t, "T", 120, 850), tries=1, timeout=30)) > 1000, hours=(0, 12))
+    steps = [s for s in PROFILE_STEPS if s <= 120]
+    levels = (1000, 950, 925, 900, 850, 700)
+    def one(run):
+        def get(url):
+            try:
+                return bz2.decompress(http_get(url, tries=2))
+            except Exception as e:
+                print(f"  profilo-icon-eu: manca {url.rsplit('/', 1)[-1]} ({e})", file=sys.stderr)
+                return b""
+        msgs, missing, total = [], 0, 0
+        for k in range(0, len(steps), 2):           # due passi alla volta: un campo intero pesa ~2 MB
+            jobs = [lambda u=pl(run, v, s, lev): get(u) for s in steps[k:k + 2] for lev in levels for v in ("T", "FI", "U", "V")]
+            jobs += [lambda u=sl(run, "T_2M", s): get(u) for s in steps[k:k + 2]]
+            for raw in fetch_all(jobs):
+                total += 1
+                missing += not raw
+                msgs += profile_crop(raw)
+        if missing > 0.3 * total:
+            raise IOError(f"mancano {missing} file su {total}")
+        return write(out_dir, "profilo-icon-eu", run, msgs)
+    return build_all("profilo-icon-eu", runs, one)
+
+
+def profile_crop(raw):
+    out = []
+    pos = 0
+    while True:
+        i = raw.find(b"GRIB", pos)
+        if i < 0:
+            break
+        h = ec.codes_new_from_message(raw[i:])
+        try:
+            n = ec.codes_get(h, "totalLength")
+            m = crop_message(h, PROFILE_BOX, stride=4)
+        finally:
+            ec.codes_release(h)
+        if m:
+            out.append(fi_to_gh(m))
+        pos = i + max(int(n), 4)
+    return out
 
 
 def write(out_dir, model, run, msgs, ext="grb2"):
@@ -1309,7 +1417,8 @@ def main():
                 build_youmeteo(ybox, a.out)
             else:
                 {"ecmwf": build_ecmwf, "ecmwf-0p1": build_ecmwf_0p1, "icon-eu": build_icon_eu, "gfs": build_gfs, "arome": build_arome, "arpege": build_arpege,
-                 "ecmwf-wave": build_ecmwf_wave, "gfs-wave": build_gfs_wave, "cmems": build_cmems}[name](box, a.out)
+                 "ecmwf-wave": build_ecmwf_wave, "gfs-wave": build_gfs_wave, "cmems": build_cmems,
+                 "profilo-ecmwf": build_profilo_ecmwf, "profilo-icon-eu": build_profilo_icon_eu}[name](box, a.out)
             ok += 1
         except Exception as e:
             print(f"ATTENZIONE: {model} non riuscito: {e}", file=sys.stderr)
