@@ -44,6 +44,7 @@ ECMWF_ROOTS = ["https://storage.googleapis.com/ecmwf-open-data", "https://ecmwf-
 _root = {"ok": None}
 ECMWF_LIVE = "https://data.ecmwf.int/forecasts"
 GFS_AWS = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
+GEFS_AWS = "https://noaa-gefs-pds.s3.amazonaws.com"
 RDA = "https://thredds.rda.ucar.edu/thredds/ncss/grid/files/g"
 BOX = [float(x) for x in os.environ.get("GRIB_BOX", "34,46,5,20").split(",")]
 
@@ -322,6 +323,27 @@ def do_ybprova(codes, out):
     return True
 
 
+def one_gefs(run, out):
+    """Controllo di GEFS (gec00) da Amazon (noaa-gefs-pds, dal 2017): 1° ogni 6 ore fino al 23/9/2020 (GEFS v11), poi
+    0,5° ogni 3 ore (v12). Vento a 10 m fino a 144 ore. Per gli anni senza GFS e senza ECMWF (2018-2020)."""
+    v12 = run >= dt.datetime(2020, 9, 23)
+    def name(step):
+        if v12:
+            return f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/atmos/pgrb2ap5/gec00.t{run:%H}z.pgrb2a.0p50.f{step:03d}"
+        return f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/pgrb2a/gec00.t{run:%H}z.pgrb2af{step:02d}" if step < 100 else \
+            f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/pgrb2a/gec00.t{run:%H}z.pgrb2af{step:03d}"
+    wanted = {("UGRD", "10 m above ground"), ("VGRD", "10 m above ground")}
+    def get_step(step):
+        idx = bg.http_get(name(step) + ".idx").decode()
+        return b"".join(bg.http_get(name(step), headers={"Range": f"bytes={a}-{b if b is not None else ''}"})
+                        for a, b in bg.parse_idx(idx, wanted))
+    steps = list(range(0, 145, 3 if v12 else 6))
+    msgs = []
+    for raw in bg.fetch_all([lambda s=s: get_step(s) for s in steps]):
+        msgs += bg.crop_bytes(raw, BOX)
+    return bg.write(out, "gefs", run, msgs)
+
+
 def one_gfs(run, out):
     if run < dt.datetime(2021, 3, 1):
         return one_gfs_rda(run, out)
@@ -358,7 +380,7 @@ def runs_between(a, b, hours=(0, 12)):
 
 
 def do_gribs(kind, a, b, out, have):
-    fn = {"ecmwf": one_ecmwf, "gfs": one_gfs, "ens": one_ens}[kind]
+    fn = {"ecmwf": one_ecmwf, "gfs": one_gfs, "ens": one_ens, "gefs": one_gefs}[kind]
     ok = bad = 0
     for run in runs_between(a, b):
         name = f"{kind}_{run:%Y%m%d%H}.grb2"
@@ -588,7 +610,7 @@ def probe():
 
 def main():
     ap = argparse.ArgumentParser()
-    for k in ("ecmwf", "gfs", "ens", "metar", "boe", "era5"):
+    for k in ("ecmwf", "gfs", "ens", "metar", "boe", "era5", "gefs"):
         ap.add_argument(f"--{k}", nargs=2, metavar=("DA", "A"))
     ap.add_argument("--yb", default="")
     ap.add_argument("--ybprova", default="")
@@ -604,7 +626,7 @@ def main():
         probe_rda()
     if x.prova_boe:
         do_boe("2026-11-01", "2026-11-30", x.out, probe=True)
-    for kind in ("ecmwf", "gfs", "ens"):
+    for kind in ("ecmwf", "gfs", "ens", "gefs"):
         if getattr(x, kind):
             ok &= do_gribs(kind, *getattr(x, kind), x.out, have)
     if x.metar:
