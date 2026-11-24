@@ -1,11 +1,11 @@
 {
- "nota": "Coda per storico.yml: tracciati YB della Giraglia 2024-2026 e della 151 Miglia 2026 (banco 0.51, 24/11/2026).",
+ "nota": "Coda per storico.yml: di nuovo la Giraglia 2025 e 2026 (il RaceSetup aveva risposto 503).",
  "richieste": [
   {
    "cosa": "yb",
    "da": "2025-01-04",
    "a": "2025-01-04",
-   "yb": "loropiana2024,loropiana2025,loropiana2026,151miglia2026",
+   "yb": "loropiana2025,loropiana2026",
    "area": ""
   }
  ]
