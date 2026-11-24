@@ -1,11 +1,11 @@
 {
- "nota": "Coda per storico.yml: prova dei codici YB di 151 Miglia e Tre Golfi (24/11/2026).",
+ "nota": "Coda per storico.yml: tracciati YB della Giraglia 2024-2026 e della 151 Miglia 2026 (banco 0.51, 24/11/2026).",
  "richieste": [
   {
-   "cosa": "ybprova",
-   "da": "2025-01-06",
-   "a": "2025-01-06",
-   "yb": "151miglia2018,151miglia18,151miles2018,151mile2018,151nm2018,cetilar2018,trofeocetilar2018,151migliacetilar2018,151miglia2018b,151miglia2018x2,tregolfi2018,tregolfi18,3golfi18,regata3golfi2018,regatadei3golfi2018,tregolfisailing2018,tregolfi-2018,tre-golfi2018,tregolfiregatta2018,rtg2018,tregolfi18b,151miglia2019,151miglia19,151miles2019,151mile2019,151nm2019,cetilar2019,trofeocetilar2019,151migliacetilar2019,151miglia2019b,151miglia2019x2,tregolfi2019,tregolfi19,3golfi19,regata3golfi2019,regatadei3golfi2019,tregolfisailing2019,tregolfi-2019,tre-golfi2019,tregolfiregatta2019,rtg2019,tregolfi19b,151miglia2020,151miglia20,151miles2020,151mile2020,151nm2020,cetilar2020,trofeocetilar2020,151migliacetilar2020,151miglia2020b,151miglia2020x2,tregolfi2020,tregolfi20,3golfi20,regata3golfi2020,regatadei3golfi2020,tregolfisailing2020,tregolfi-2020,tre-golfi2020,tregolfiregatta2020,rtg2020,tregolfi20b,151miglia2021,151miglia21,151miles2021,151mile2021,151nm2021,cetilar2021,trofeocetilar2021,151migliacetilar2021,151miglia2021b,151miglia2021x2,tregolfi2021,tregolfi21,3golfi21,regata3golfi2021,regatadei3golfi2021,tregolfisailing2021,tregolfi-2021,tre-golfi2021,tregolfiregatta2021,rtg2021,tregolfi21b,151miglia2022,151miglia22,151miles2022,151mile2022,151nm2022,cetilar2022,trofeocetilar2022,151migliacetilar2022,151miglia2022b,151miglia2022x2,tregolfi2022,tregolfi22,3golfi22,regata3golfi2022,regatadei3golfi2022,tregolfisailing2022,tregolfi-2022,tre-golfi2022,tregolfiregatta2022,rtg2022,tregolfi22b,151miglia2023,151miglia23,151miles2023,151mile2023,151nm2023,cetilar2023,trofeocetilar2023,151migliacetilar2023,151miglia2023b,151miglia2023x2,tregolfi2023,tregolfi23,3golfi23,regata3golfi2023,regatadei3golfi2023,tregolfisailing2023,tregolfi-2023,tre-golfi2023,tregolfiregatta2023,rtg2023,tregolfi23b,151miglia2024,151miglia24,151miles2024,151mile2024,151nm2024,cetilar2024,trofeocetilar2024,151migliacetilar2024,151miglia2024b,151miglia2024x2,tregolfi2024,tregolfi24,3golfi24,regata3golfi2024,regatadei3golfi2024,tregolfisailing2024,tregolfi-2024,tre-golfi2024,tregolfiregatta2024,rtg2024,tregolfi24b,151miglia2025,151miglia25,151miles2025,151mile2025,151nm2025,cetilar2025,trofeocetilar2025,151migliacetilar2025,151miglia2025b,151miglia2025x2,tregolfi2025,tregolfi25,3golfi25,regata3golfi2025,regatadei3golfi2025,tregolfisailing2025,tregolfi-2025,tre-golfi2025,tregolfiregatta2025,rtg2025,tregolfi25b,151miglia2026,151miglia26,151miles2026,151mile2026,151nm2026,cetilar2026,trofeocetilar2026,151migliacetilar2026,151miglia2026b,151miglia2026x2,tregolfi2026,tregolfi26,3golfi26,regata3golfi2026,regatadei3golfi2026,tregolfisailing2026,tregolfi-2026,tre-golfi2026,tregolfiregatta2026,rtg2026,tregolfi26b",
+   "cosa": "yb",
+   "da": "2025-01-04",
+   "a": "2025-01-04",
+   "yb": "loropiana2024,loropiana2025,loropiana2026,151miglia2026",
    "area": ""
   }
  ]
