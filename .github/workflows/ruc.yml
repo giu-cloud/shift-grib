@@ -16,6 +16,10 @@ on:
     - cron: "35 1-22/3 * * *"
     - cron: "5 2-23/3 * * *"
   workflow_dispatch:
+    inputs:
+      indietro:
+        description: "Quante corse guardare all'indietro (di solito 4; MeteoHub ne tiene circa 24)"
+        default: "4"
   # il primo giro parte appena il flusso arriva in main
   push:
     branches: [main]
@@ -31,7 +35,8 @@ concurrency:
 jobs:
   ruc:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # un giro normale dura 2-4 minuti; il recupero all'indietro circa 30 secondi a corsa
+    timeout-minutes: 60
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -55,13 +60,15 @@ jobs:
       - name: Scarica e ritaglia
         env:
           GRIB_HAVE: have.txt
+          ICON2I_RUC_INDIETRO: ${{ inputs.indietro || '4' }}
         run: python tools/build_gribs.py --out gribs --models icon-2i-ruc
 
       - name: Pubblica
         run: |
           ls gribs/*.grb2 > /dev/null 2>&1 || { echo "Nessuna corsa nuova in questo giro."; exit 0; }
           bash tools/archivio.sh gribs/*.grb2
-          gh release upload gribs gribs/*.grb2 --clobber
+          # in gribs solo le ultime 8 (un recupero all'indietro ne porta di più: quelle vanno solo in archivio)
+          gh release upload gribs $(ls gribs/*.grb2 | sort -r | head -8) --clobber
           # le ultime 8 corse, come gli altri modelli
           gh release view gribs --json assets -q '.assets[].name' | grep "^icon-2i-ruc_" | sort -r | tail -n +9 | while read n; do
             gh release delete-asset gribs "$n" -y || true

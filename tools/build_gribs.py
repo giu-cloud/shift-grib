@@ -534,12 +534,14 @@ def build_icon_2i(box, out_dir):
 # ciclo di assimilazione. Durata stimata 0-24 ore (25 campi per variabile, dal peso del file): ICON2I_RUC_ORE la cambia.
 # Il primo giro scrive nel registro le ore che trova davvero.
 ICON2I_RUC_HOURS = int(os.environ.get("ICON2I_RUC_ORE", "25"))
+# quante corse guardare all'indietro (di solito 4; di più per recuperare i giorni che MeteoHub tiene ancora, circa tre)
+ICON2I_RUC_BACK = int(os.environ.get("ICON2I_RUC_INDIETRO", "4") or "4")
 
 
 def build_icon_2i_ruc(box, out_dir):
     """ICON-2I-RUC di ItaliaMeteo-Arpae da MeteoHub (dati aperti, senza account): corse 00, 03, ..., 21, stessi campi e
     stesso ritaglio di ICON-2I. Si guardano le ultime 4 corse, così un giro saltato non lascia buchi nell'archivio."""
-    return build_meteohub_icon("icon-2i-ruc", "ICON_2I_RUC", "ICON_2I_RUC", hours=tuple(range(0, 24, 3)), keep=4,
+    return build_meteohub_icon("icon-2i-ruc", "ICON_2I_RUC", "ICON_2I_RUC", hours=tuple(range(0, 24, 3)), keep=ICON2I_RUC_BACK,
                                min_hours=ICON2I_RUC_HOURS, box=box, out_dir=out_dir)
 
 
@@ -556,7 +558,7 @@ def build_meteohub_icon(model, folder, prefix, hours, keep, min_hours, box, out_
             if url(t, var).rsplit("/", 1)[1] not in page:
                 return False
         return True
-    runs = recent_runs(ready, hours=hours, n=keep)
+    runs = recent_runs(ready, hours=hours, n=keep, back_hours=max(54, 3 * keep + 12))
     def valid_at(m):                          # l'ora zero è in minuti ("0m"), le altre in ore: si ordina per validità
         h = ec.codes_new_from_message(m)
         try:
