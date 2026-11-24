@@ -1,29 +1,45 @@
 {
- "nota": "Coda per storico.yml: GEFS della primavera 2018 col nome giusto (24/11/2026).",
+ "nota": "Coda per storico.yml: i buchi rimasti (24/11/2026).",
  "richieste": [
   {
-   "cosa": "gefs",
-   "da": "2018-05-28",
-   "a": "2018-06-03",
+   "cosa": "era5",
+   "da": "2025-05-27",
+   "a": "2025-06-02",
    "yb": "",
    "area": "",
-   "regata": "151miglia2018"
+   "regata": "151miglia2025"
   },
   {
-   "cosa": "gefs",
-   "da": "2018-05-08",
-   "a": "2018-05-14",
+   "cosa": "ecmwf",
+   "da": "2023-05-09",
+   "a": "2023-05-15",
    "yb": "",
    "area": "",
-   "regata": "tregolfi2018"
+   "regata": "tregolfi23"
   },
   {
-   "cosa": "gefs",
-   "da": "2018-04-06",
-   "a": "2018-04-12",
+   "cosa": "ecmwf",
+   "da": "2023-07-06",
+   "a": "2023-07-15",
+   "yb": "",
+   "area": "egeo",
+   "regata": "aegean6002023"
+  },
+  {
+   "cosa": "ascat",
+   "da": "2022-10-19",
+   "a": "2022-11-01",
    "yb": "",
    "area": "",
-   "regata": "roma2018"
+   "regata": "rmsr2022"
+  },
+  {
+   "cosa": "ascat",
+   "da": "2022-08-16",
+   "a": "2022-08-25",
+   "yb": "",
+   "area": "",
+   "regata": "pm2022"
   }
  ]
 }
