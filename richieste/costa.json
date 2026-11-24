@@ -1,0 +1,6 @@
+{
+  "nota": "Atlante del vento sotto costa (routing/vento_sotto_costa.md, strada A): vento dal radar dei Sentinel-1 sulle aree di Lens. Ogni modifica di questo file su main avvia .github/workflows/costa.yml.",
+  "aree": "palermo,egadi,eolie,napoli,toscano,maddalena-bonifacio,messina,malta,cagliari,genova",
+  "da": "2024-04-01",
+  "a": "2026-11-24"
+}

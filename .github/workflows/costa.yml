@@ -1,0 +1,101 @@
+name: Atlante del vento sotto costa (radar dei Sentinel-1)
+
+# Studio nel Project di Shift: routing/vento_sotto_costa.md (24/11/2026). Scarica dal Copernicus Marine Service il vento
+# SAR a 0,01 gradi sulle aree di Lens, con il vento ECMWF alla stessa ora (tools/costa.py), e lo pubblica nella release
+# "costa-sar": un file .npz per area e dataset, e il registro del lavoro. L'analisi (atlante e confronto con Lens) si fa
+# fuori. Si avvia modificando richieste/costa.json su main, o a mano.
+# Credenziali: i segreti CMEMS_USER e CMEMS_PASS (gli stessi delle correnti).
+
+on:
+  push:
+    branches: [main]
+    paths: ["richieste/costa.json"]
+  workflow_dispatch:
+    inputs:
+      aree:
+        description: "Aree di Lens, separate da virgole (eolie, egadi, palermo, messina, malta, napoli, cagliari, maddalena-bonifacio, toscano, genova)"
+        type: string
+        default: "palermo"
+      da:
+        description: "Primo giorno (AAAA-MM-GG)"
+        type: string
+        default: "2024-04-01"
+      a:
+        description: "Ultimo giorno (AAAA-MM-GG), vuoto = oggi"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: costa-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  piano:
+    runs-on: ubuntu-latest
+    outputs:
+      lavori: ${{ steps.p.outputs.lavori }}
+      da: ${{ steps.p.outputs.da }}
+      a: ${{ steps.p.outputs.a }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: p
+        env:
+          EVENTO: ${{ github.event_name }}
+          AREE: ${{ inputs.aree }}
+          DA: ${{ inputs.da }}
+          A: ${{ inputs.a }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import datetime as dt, json, os
+          if os.environ["EVENTO"] == "push":
+              r = json.load(open("richieste/costa.json"))
+          else:
+              r = {"aree": os.environ.get("AREE", ""), "da": os.environ.get("DA", ""), "a": os.environ.get("A", "")}
+          aree = [x.strip() for x in r.get("aree", "").split(",") if x.strip()] or ["palermo"]
+          print("lavori=" + json.dumps(aree))
+          print("da=" + (r.get("da") or "2024-04-01"))
+          print("a=" + (r.get("a") or str(dt.date.today())))
+          EOF
+
+  lavoro:
+    needs: piano
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        area: ${{ fromJson(needs.piano.outputs.lavori) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CMEMS_USER: ${{ secrets.CMEMS_USER }}
+      CMEMS_PASS: ${{ secrets.CMEMS_PASS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Strumenti
+        run: pip install -q copernicusmarine numpy xarray netCDF4 h5netcdf
+
+      - name: Vento dal radar
+        run: python tools/costa.py --area "${{ matrix.area }}" --da "${{ needs.piano.outputs.da }}" --a "${{ needs.piano.outputs.a }}" --out costa
+
+      - name: Pubblicazione
+        if: always()
+        run: |
+          tag="costa-sar"
+          gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --latest=false --title "Vento dal radar dei Sentinel-1 sulle aree di Lens" \
+            --notes "Per l'atlante del vento sotto costa di Shift (routing/vento_sotto_costa.md). Campi di vento SAR a 0,01 gradi con il vento ECMWF alla stessa ora, ritagliati sulle aree di Lens. Generated using E.U. Copernicus Marine Service Information (prodotti WIND_MED_PHY_HR_L3). Formato: .npz di numpy, descritto in tools/costa.py." || true
+          for f in costa/*.npz costa/log_*.txt costa/descrizione_*.json; do
+            [ -e "$f" ] || continue
+            for k in $(seq 1 14); do
+              gh release upload "$tag" "$f" --clobber && break
+              echo "caricamento non riuscito (limite di GitHub?), riprovo tra 5 minuti"; sleep 300
+            done
+          done
