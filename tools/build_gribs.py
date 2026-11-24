@@ -29,6 +29,9 @@ Modelli:
   icon-2i  ICON-2I di ItaliaMeteo-Arpae (dati aperti MeteoHub, senza account), circa 2,2 km, vento a 10 m e raffiche,
            ogni ora fino a 72, corse 00 e 12. Area propria (ICON2I_BOX, di default 35-45 N e 7-16,5 E: Liguria-Malta), circa
            60 MB a corsa.
+  icon-2i-ruc  ICON-2I-RUC di ItaliaMeteo-Arpae (dati aperti MeteoHub), la stessa ICON-2I a ciclo rapido: corse ogni 3
+           ore (00, 03, ..., 21), ognuna dall'analisi più fresca; stessi campi e stessa area di ICON-2I, 0-24 ore (stima).
+           Ha un giro suo (.github/workflows/ruc.yml), un'ora e mezza dopo l'ora della corsa.
   gfs      GFS della NOAA (dati aperti), 0,25 gradi, vento a 10 m e pressione, ogni ora fino a 48 ore e poi ogni 3
            fino a 144. Si prende dall'archivio pubblico su Amazon, scaricando solo i campi che servono.
 
@@ -37,7 +40,7 @@ L'elenco dei file già in archivio arriva nel file indicato dalla variabile GRIB
 
   youmeteo HRRR Italia di youmeteo.com (circa 4 km), per abbonati: richiede le credenziali nei Secrets e un deposito privato.
 
-Uso:  python tools/build_gribs.py --out gribs [--models ecmwf,ecmwf-0p1,icon-eu,icon-2i,gfs,arome,arpege,ecmwf-wave,gfs-wave,cmems,youmeteo] [--box latmin,latmax,lonmin,lonmax]
+Uso:  python tools/build_gribs.py --out gribs [--models ecmwf,ecmwf-0p1,icon-eu,icon-2i,icon-2i-ruc,gfs,arome,arpege,ecmwf-wave,gfs-wave,cmems,youmeteo] [--box latmin,latmax,lonmin,lonmax]
       python tools/build_gribs.py --selftest un_file.grb      (prova il solo ritaglio, senza rete)
       python tools/build_gribs.py --tiles-check sintetico [file interi...]   (taglia a quadratini, ricompone e confronta)
       python tools/build_gribs.py --tiles --out gribs --tiles-out tiles     (pubblica i quadratini, nel lavoro su GitHub)
@@ -517,38 +520,70 @@ def build_icon_eu(box, out_dir):
 
 
 ICON2I_FILES = {"U_10M": "heightAboveGround-10", "V_10M": "heightAboveGround-10", "VMAX_10M": "heightAboveGround-10"}
+METEOHUB = "https://meteohub.agenziaitaliameteo.it/nwp"
 
 
 def build_icon_2i(box, out_dir):
     """ICON-2I di ItaliaMeteo-Arpae da MeteoHub (dati aperti, senza account). Un file per variabile e per corsa
     (~85 MB, tutte le ore da 0 a 72), griglia regolare 0,025 x 0,02 gradi su 33,7-48,9 N e 3-22 E."""
-    root = "https://meteohub.agenziaitaliameteo.it/nwp/ICON-2I_SURFACE_PRESSURE_LEVELS"
+    return build_meteohub_icon("icon-2i", "ICON-2I_SURFACE_PRESSURE_LEVELS", "ICON_2I_SURFACE_PRESSURE_LEVELS",
+                               hours=(0, 12), keep=3, min_hours=73, box=box, out_dir=out_dir)
+
+
+# ICON-2I-RUC (24/11/2026): la stessa ICON-2I a ciclo rapido, una corsa ogni 3 ore, ognuna dall'analisi più fresca del
+# ciclo di assimilazione. Durata stimata 0-24 ore (25 campi per variabile, dal peso del file): ICON2I_RUC_ORE la cambia.
+# Il primo giro scrive nel registro le ore che trova davvero.
+ICON2I_RUC_HOURS = int(os.environ.get("ICON2I_RUC_ORE", "25"))
+
+
+def build_icon_2i_ruc(box, out_dir):
+    """ICON-2I-RUC di ItaliaMeteo-Arpae da MeteoHub (dati aperti, senza account): corse 00, 03, ..., 21, stessi campi e
+    stesso ritaglio di ICON-2I. Si guardano le ultime 4 corse, così un giro saltato non lascia buchi nell'archivio."""
+    return build_meteohub_icon("icon-2i-ruc", "ICON_2I_RUC", "ICON_2I_RUC", hours=tuple(range(0, 24, 3)), keep=4,
+                               min_hours=ICON2I_RUC_HOURS, box=box, out_dir=out_dir)
+
+
+def build_meteohub_icon(model, folder, prefix, hours, keep, min_hours, box, out_dir):
+    """ICON-2I e ICON-2I-RUC da MeteoHub: <folder>/<corsa>/<VAR>/<prefix>_<corsa>_heightAboveGround-10.grib, un file per
+    variabile con tutte le ore. La corsa è pronta quando i tre file sono nell'elenco delle cartelle; è completa quando
+    vento u e v hanno almeno [min_hours] ore (la raffica può mancare all'ora zero)."""
+    root = f"{METEOHUB}/{folder}"
     def url(t, var):
-        return f"{root}/{t:%Y%m%d%H}/{var}/ICON_2I_SURFACE_PRESSURE_LEVELS_{t:%Y%m%d%H}_{ICON2I_FILES[var]}.grib"
+        return f"{root}/{t:%Y%m%d%H}/{var}/{prefix}_{t:%Y%m%d%H}_{ICON2I_FILES[var]}.grib"
     def ready(t):
         for var in ICON2I_FILES:
             page = http_get(f"{root}/{t:%Y%m%d%H}/{var}/", tries=1, timeout=30).decode("utf-8", "replace")
             if url(t, var).rsplit("/", 1)[1] not in page:
                 return False
         return True
-    runs = recent_runs(ready, hours=(0, 12))
+    runs = recent_runs(ready, hours=hours, n=keep)
+    def valid_at(m):                          # l'ora zero è in minuti ("0m"), le altre in ore: si ordina per validità
+        h = ec.codes_new_from_message(m)
+        try:
+            return (int(ec.codes_get(h, "validityDate")), int(ec.codes_get(h, "validityTime")))
+        finally:
+            ec.codes_release(h)
+    def lead_hours(msgs, run):
+        out = []
+        for m in msgs:
+            d, t = valid_at(m)
+            v = dt.datetime.strptime(f"{d:08d}{t:04d}", "%Y%m%d%H%M")
+            out.append(round((v - run).total_seconds() / 3600))
+        return sorted(out)
     def one(run):
         raws = fetch_all([lambda v=v: http_get(url(run, v), timeout=600) for v in ICON2I_FILES])
         msgs = []
         for var, raw in zip(ICON2I_FILES, raws):
             got = crop_bytes(raw, box)
-            if var != "VMAX_10M" and len(got) < 73:
-                raise IOError(f"{var}: {len(got)} ore su 73, corsa incompleta")
+            hrs = lead_hours(got, run)
+            print(f"{model}: corsa {run:%Y-%m-%d %H}Z, {var}: {len(got)} campi, ore {hrs[0] if hrs else '-'}-{hrs[-1] if hrs else '-'}"
+                  f", {len(raw) / 1e6:.1f} MB scaricati")
+            if var != "VMAX_10M" and len(got) < min_hours:
+                raise IOError(f"{var}: {len(got)} ore su {min_hours}, corsa incompleta")
             msgs += got
-        def valid_at(m):                      # l'ora zero è in minuti ("0m"), le altre in ore: si ordina per validità
-            h = ec.codes_new_from_message(m)
-            try:
-                return (int(ec.codes_get(h, "validityDate")), int(ec.codes_get(h, "validityTime")))
-            finally:
-                ec.codes_release(h)
         msgs.sort(key=valid_at)               # in ordine di tempo, come gli altri modelli
-        return write(out_dir, "icon-2i", run, msgs)
-    return build_all("icon-2i", runs, one)
+        return write(out_dir, model, run, msgs)
+    return build_all(model, runs, one)
 
 
 def build_youmeteo(box, out_dir):
@@ -777,7 +812,7 @@ def write(out_dir, model, run, msgs, ext="grb2"):
 # ------------------------------------------------------------------------------------------------- quadratini
 # Oltre al file intero, i modelli fitti si pubblicano tagliati a quadratini fissi, uguali per tutti i modelli, così
 # l'app scarica solo quelli che toccano il riquadro tracciato sulla carta.
-#   - lato 1 grado per i modelli fini (icon-2i, arome, youmeteo), 2 gradi per gli altri (icon-eu, arpege, ecmwf-0p1,
+#   - lato 1 grado per i modelli fini (icon-2i, icon-2i-ruc, arome, youmeteo), 2 gradi per gli altri (icon-eu, arpege, ecmwf-0p1,
 #     e cmems per stare sotto i 1.000 file della release); niente quadratini da 0,15 gradi di maglia in su;
 #   - angoli sud-ovest su multipli interi del lato; un quadratino (LAT, LON) contiene i punti con
 #     LAT <= lat < LAT+lato e LON <= lon < LON+lato, assegnati per indice: affiancati ridanno la griglia del modello;
@@ -785,20 +820,21 @@ def write(out_dir, model, run, msgs, ext="grb2"):
 #   - non si pubblicano i quadratini con meno di 2 punti per lato o tutti mancanti (per esempio il mare fuori da AROME);
 #   - nome: <modello>_<AAAAMMGGHH>_t<lato>_<N|S><LL>_<E|W><LLL>.<ext>, e per ultimo <modello>_<AAAAMMGGHH>_tiles.ok.
 # modelli a quadratini; la variabile TILE_MODELS li restringe (nel deposito privato di Shift: solo youmeteo)
-TILE_MODELS = [m for m in os.environ.get("TILE_MODELS", "icon-2i,arome,youmeteo-96h,youmeteo-48h,cmems-cur,cmems-wav,icon-eu,ecmwf-0p1,arpege").split(",") if m]
+TILE_MODELS = [m for m in os.environ.get("TILE_MODELS", "icon-2i,icon-2i-ruc,arome,youmeteo-96h,youmeteo-48h,cmems-cur,cmems-wav,icon-eu,ecmwf-0p1,arpege").split(",") if m]
 TILE_RELEASE = "tiles"
-TILE_SIDES = {"icon-2i": 1, "arome": 1, "youmeteo-96h": 1, "youmeteo-48h": 1,
+TILE_SIDES = {"icon-2i": 1, "icon-2i-ruc": 1, "arome": 1, "youmeteo-96h": 1, "youmeteo-48h": 1,
               "icon-eu": 2, "arpege": 2, "ecmwf-0p1": 2, "cmems-cur": 2, "cmems-wav": 2}
-# Una sola corsa per modello: con i lati di 1 e 2 gradi una corsa di tutti i modelli fa circa 570 file e una release
-# ne tiene al massimo 1.000. Si lavora un modello alla volta (quadratini, segnaposto, poi via la corsa vecchia),
-# così il massimo momentaneo è circa 570 più i quadratini di un modello solo.
+# Una sola corsa per modello: con i lati di 1 e 2 gradi una corsa di tutti i modelli fa circa 810 file (con ICON-2I-RUC,
+# dal 24/11/2026) e una release ne tiene al massimo 1.000. Si lavora un modello alla volta (quadratini, segnaposto, poi
+# via la corsa vecchia). Per ICON-2I e ICON-2I-RUC (circa 200 file ciascuno) la corsa nuova accanto alla vecchia
+# supererebbe il limite: lì si toglie prima la vecchia (vedi publish_tiles), e per un minuto il modello va col file intero.
 TILE_KEEP_RUNS = 1
 TILE_MAX_ASSETS = int(os.environ.get("TILE_MAX_ASSETS", "1000"))      # limite di GitHub per release (la variabile serve alle prove)
 # Forma leggera (dal 18/11/2026): per questi modelli (GRIB2) i quadratini col nome di sempre portano solo il vento a 10 m
 # (10u e 10v), in GRIB2 modello 5.3 (complex packing con differenze spaziali) a un decimo di m/s; tutto il resto
 # (raffiche, pressione) va nei quadratini gemelli <modello>_<corsa>_t<lato>x_<N|S><LL>_<E|W><LLL>.<ext>, stessa griglia
 # e stessa compressione. Gli altri (youmeteo GRIB1, cmems) restano come erano.
-TILE_WIND_MODELS = {"icon-2i", "arome", "icon-eu", "ecmwf-0p1", "arpege"}
+TILE_WIND_MODELS = {"icon-2i", "icon-2i-ruc", "arome", "icon-eu", "ecmwf-0p1", "arpege"}
 TILE_DECIMALS = 1        # precisione di un decimo (m/s per il vento e le raffiche; Pa per la pressione)
 TILE_WIND_TOL = 0.1      # scarto massimo ammesso dal file intero, nelle unità del campo
 TILES_REDO = os.environ.get("TILES_REDO", "").lower() in ("1", "true", "si", "sì")   # rifà anche le corse già pubblicate
@@ -1265,6 +1301,9 @@ def publish_tiles(gribs_dir, tiles_dir):
                 if gone and len(tiles) - len(gone) + len(paths) + 1 <= TILE_MAX_ASSETS:
                     print(f"{model}: {len(tiles)} file nella release più {len(paths)} supererebbero {TILE_MAX_ASSETS}: tolgo prima i {len(gone)} della corsa vecchia")
                     delete(gone)
+                    # l'indice non deve elencare i file appena tolti: lo si riscrive subito (il modello sparisce dall'indice
+                    # finché non c'è la corsa nuova completa, e l'app usa il file intero)
+                    publish_index(TILE_RELEASE)
                 else:
                     print(f"ATTENZIONE: {model}: {len(tiles)} file nella release più {len(paths)} supererebbero {TILE_MAX_ASSETS}, salto", file=sys.stderr)
                     continue
@@ -1411,6 +1450,10 @@ def main():
                 # 2,2 km: su tutta l'area sarebbero ~150 MB a corsa, quindi un riquadro proprio (Liguria-Malta, per la Middle Sea Race)
                 ibox = tuple(float(x) for x in os.environ.get("ICON2I_BOX", "35,45,7,16.5").split(","))
                 build_icon_2i(ibox, a.out)
+            elif name == "icon-2i-ruc":
+                # stesso riquadro di ICON-2I, se non se ne dà uno proprio
+                ibox = tuple(float(x) for x in os.environ.get("ICON2I_RUC_BOX", os.environ.get("ICON2I_BOX", "35,45,7,16.5")).split(","))
+                build_icon_2i_ruc(ibox, a.out)
             elif name == "youmeteo":
                 # area propria, più piccola: è un modello fitto e i file devono restare leggeri
                 ybox = tuple(float(x) for x in os.environ.get("YOUMETEO_BOX", "36,40,11,17").split(","))

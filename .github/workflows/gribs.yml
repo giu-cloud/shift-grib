@@ -5,7 +5,9 @@ name: Aggiorna i GRIB
 #   - release gribs: le ultime 8 corse di ogni modello, file interi;
 #   - release tiles: l'ultima corsa dei modelli fini tagliata a quadratini di 1 o 2 gradi. Il vento a 10 m è nei quadratini
 #     <modello>_<corsa>_t<lato>_..., in GRIB2 5.3 a un decimo di m/s; raffiche e pressione nei gemelli ..._t<lato>x_...;
-#   - release archivio-AAAA-MM: tutte le corse del mese, non si cancella mai (serve al banco di prova);
+#   - release archivio-AAAA-MM: tutte le corse del mese, non si cancella mai (serve al banco di prova). Gruppi a parte e
+#     rete di sicurezza per il limite di 1.000 file: vedi tools/archivio.sh;
+#   - ICON-2I-RUC (corse ogni 3 ore) ha un giro suo, ruc.yml, nello stesso gruppo: i due giri non vanno mai insieme;
 #   - nella release gribs anche il profilo verticale per Lens (dal 23/11/2026): profilo-ecmwf_<corsa>.grb2 e
 #     profilo-icon-eu_<corsa>.grb2, temperatura, quota geopotenziale e vento a 1000-700 hPa e temperatura a 2 m, a 0,25°;
 #   - release archivio-<area>-AAAA-MM: le aree in più del banco di prova (variabile GRIB_EXTRA, di default il Mediterraneo
@@ -92,13 +94,8 @@ jobs:
       - name: Pubblica
         run: |
           ls gribs/*.grb* > /dev/null 2>&1 || { echo "Nessun file nuovo in questo giro."; exit 0; }
-          # archivio permanente: una release per mese della corsa, niente viene mai tolto
-          for f in gribs/*.grb*; do
-            n=$(basename "$f"); d=$(echo "$n" | sed -E 's/.*_([0-9]{4})([0-9]{2})[0-9]{4}\..*/\1-\2/')
-            tag="archivio-$d"
-            gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --latest=false --title "Archivio GRIB $d" --notes "Tutte le corse del mese, per il banco di prova. ECMWF: dati aperti, CC-BY-4.0. ICON-EU: dati aperti del DWD. ICON-2I: dati aperti ItaliaMeteo-Arpae (MeteoHub). GFS: dati aperti NOAA. AROME e ARPEGE: dati aperti Météo-France, Licence Ouverte 2.0. Correnti e onde del Mediterraneo: generated using E.U. Copernicus Marine Service Information."
-            gh release upload "$tag" "$f" --clobber
-          done
+          # archivio permanente: una release per mese della corsa (e per gruppo), niente viene mai tolto
+          bash tools/archivio.sh gribs/*.grb*
           # aree in più: solo nell'archivio della loro area (archivio-<area>-AAAA-MM), mai in gribs o nei quadratini
           for f in extra/*.grb*; do
             [ -e "$f" ] || continue
@@ -111,7 +108,7 @@ jobs:
           gh release view gribs > /dev/null 2>&1 || gh release create gribs --title "GRIB" --notes "File GRIB ritagliati dei modelli aperti, aggiornati ogni tre ore. Fonti e licenze nel README del deposito."
           gh release upload gribs gribs/*.grb* --clobber
           # si tengono le ultime 8 corse di ogni modello (servono allo storico), le più vecchie si tolgono
-          for m in ecmwf ecmwf-0p1 icon-eu icon-2i gfs arome arpege ecmwf-wave gfs-wave cmems-cur cmems-wav profilo-ecmwf profilo-icon-eu; do
+          for m in ecmwf ecmwf-0p1 icon-eu icon-2i icon-2i-ruc gfs arome arpege ecmwf-wave gfs-wave cmems-cur cmems-wav profilo-ecmwf profilo-icon-eu; do
             gh release view gribs --json assets -q '.assets[].name' | grep "^${m}_" | sort -r | tail -n +9 | while read n; do
               gh release delete-asset gribs "$n" -y || true
             done
@@ -119,7 +116,7 @@ jobs:
           # indice della release, da scaricare con un solo download senza usare l'API
           python tools/build_gribs.py --index gribs
 
-      # Quadratini: gli stessi file tagliati a riquadri fissi (1 grado per icon-2i, arome e youmeteo, 2 per icon-eu,
+      # Quadratini: gli stessi file tagliati a riquadri fissi (1 grado per icon-2i, icon-2i-ruc, arome e youmeteo, 2 per icon-eu,
       # arpege, ecmwf-0p1 e cmems) nella release tiles. Un modello alla volta: quadratini, segnaposto
       # <modello>_<corsa>_tiles.ok, poi via la corsa vecchia. Si tiene l'ultima corsa completa (limite: 1.000 file).
       - name: Quadratini (release tiles)
