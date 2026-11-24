@@ -1,0 +1,75 @@
+name: ICON-2I-RUC
+
+# ICON-2I-RUC di ItaliaMeteo-Arpae (dati aperti MeteoHub, senza account): la ICON-2I a ciclo rapido, una corsa ogni 3 ore
+# (00, 03, ..., 21 UTC), in rete circa un'ora - un'ora e un quarto dopo l'ora della corsa. Il giro principale (gribs.yml,
+# ai :20 delle ore 0, 3, 6, ...) la prenderebbe con più di 3 ore di ritardo: per questo ha un giro suo, leggero, ai :35
+# delle ore 1, 4, 7, ... e un secondo tentativo ai :05 delle ore 2, 5, 8, ... (GitHub parte spesso 10-40 minuti dopo).
+# Così la corsa delle 03 è pubblicata verso le 04:40-05:15 invece che dopo le 06:20.
+#   - release gribs: icon-2i-ruc_<corsa>.grb2, le ultime 8 corse (un giorno);
+#   - release tiles: quadratini da 1 grado in forma leggera (10u e 10v; gemelli x con la raffica);
+#   - release archivio-ruc-AAAA-MM: tutte le corse del mese (tools/archivio.sh);
+#   - gli indice.json di gribs e tiles.
+# Stesso gruppo di gribs.yml: i due giri non vanno mai insieme (caricano e cancellano nelle stesse release).
+
+on:
+  schedule:
+    - cron: "35 1-22/3 * * *"
+    - cron: "5 2-23/3 * * *"
+  workflow_dispatch:
+  # il primo giro parte appena il flusso arriva in main
+  push:
+    branches: [main]
+    paths: [".github/workflows/ruc.yml"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gribs
+  cancel-in-progress: false
+
+jobs:
+  ruc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Strumenti
+        run: pip install numpy requests eccodes
+
+      - name: Corse già in archivio
+        run: |
+          : > have.txt
+          for r in $(gh release list --limit 200 --json tagName -q '.[].tagName' | grep '^archivio-ruc-' || true); do
+            gh release view "$r" --json assets -q '.assets[].name' >> have.txt || true
+          done
+          echo "Corse RUC già in archivio: $(wc -l < have.txt)"
+
+      - name: Scarica e ritaglia
+        env:
+          GRIB_HAVE: have.txt
+        run: python tools/build_gribs.py --out gribs --models icon-2i-ruc
+
+      - name: Pubblica
+        run: |
+          ls gribs/*.grb2 > /dev/null 2>&1 || { echo "Nessuna corsa nuova in questo giro."; exit 0; }
+          bash tools/archivio.sh gribs/*.grb2
+          gh release upload gribs gribs/*.grb2 --clobber
+          # le ultime 8 corse, come gli altri modelli
+          gh release view gribs --json assets -q '.assets[].name' | grep "^icon-2i-ruc_" | sort -r | tail -n +9 | while read n; do
+            gh release delete-asset gribs "$n" -y || true
+          done
+          python tools/build_gribs.py --index gribs
+
+      - name: Quadratini (release tiles)
+        continue-on-error: true
+        env:
+          TILE_MODELS: icon-2i-ruc
+        run: python tools/build_gribs.py --tiles --out gribs --tiles-out tiles
