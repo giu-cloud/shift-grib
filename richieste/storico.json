@@ -1,12 +1,37 @@
 {
- "nota": "Coda per storico.yml: di nuovo la Giraglia 2025 e 2026 (il RaceSetup aveva risposto 503).",
+ "nota": "Coda per storico.yml: dati delle regate nuove del banco 0.51 (Giraglia 2024-2026, 151 Miglia 2026), 24/11/2026.",
  "richieste": [
   {
-   "cosa": "yb",
-   "da": "2025-01-04",
-   "a": "2025-01-04",
-   "yb": "loropiana2025,loropiana2026",
-   "area": ""
+   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf",
+   "da": "2024-06-09",
+   "a": "2024-06-16",
+   "yb": "",
+   "area": "",
+   "regata": "loropiana2024"
+  },
+  {
+   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf",
+   "da": "2025-06-08",
+   "a": "2025-06-17",
+   "yb": "",
+   "area": "",
+   "regata": "loropiana2025"
+  },
+  {
+   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf",
+   "da": "2026-06-14",
+   "a": "2026-06-23",
+   "yb": "",
+   "area": "",
+   "regata": "loropiana2026"
+  },
+  {
+   "cosa": "era5,gefs,ascat,metar,gfs,ecmwf",
+   "da": "2026-05-27",
+   "a": "2026-06-03",
+   "yb": "",
+   "area": "",
+   "regata": "151miglia2026"
   }
  ]
 }
