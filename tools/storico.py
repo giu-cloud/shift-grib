@@ -340,9 +340,13 @@ def one_gefs(run, out):
     """Controllo di GEFS (gec00) da Amazon (noaa-gefs-pds, dal 2017): 1° ogni 6 ore fino al 23/9/2020 (GEFS v11), poi
     0,5° ogni 3 ore (v12). Vento a 10 m fino a 144 ore. Per gli anni senza GFS e senza ECMWF (2018-2020)."""
     v12 = run >= dt.datetime(2020, 9, 23)
+    # fino a metà 2018 i file stanno direttamente sotto l'ora della corsa, con il passo a tre cifre (24/11: visto nel secchio)
+    flat = (not v12) and run < dt.datetime(2018, 7, 1)
     def name(step):
         if v12:
             return f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/atmos/pgrb2ap5/gec00.t{run:%H}z.pgrb2a.0p50.f{step:03d}"
+        if flat:
+            return f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/gec00.t{run:%H}z.pgrb2af{step:03d}"
         return f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/pgrb2a/gec00.t{run:%H}z.pgrb2af{step:02d}" if step < 100 else \
             f"{GEFS_AWS}/gefs.{run:%Y%m%d}/{run:%H}/pgrb2a/gec00.t{run:%H}z.pgrb2af{step:03d}"
     wanted = {("UGRD", "10 m above ground"), ("VGRD", "10 m above ground")}
