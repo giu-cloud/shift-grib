@@ -1,45 +1,12 @@
 {
- "nota": "Coda per storico.yml: i buchi rimasti (24/11/2026).",
+ "nota": "Coda per storico.yml: prova dei codici YB della Giraglia (24/11/2026).",
  "richieste": [
   {
-   "cosa": "era5",
-   "da": "2025-05-27",
-   "a": "2025-06-02",
-   "yb": "",
-   "area": "",
-   "regata": "151miglia2025"
-  },
-  {
-   "cosa": "ecmwf",
-   "da": "2023-05-09",
-   "a": "2023-05-15",
-   "yb": "",
-   "area": "",
-   "regata": "tregolfi23"
-  },
-  {
-   "cosa": "ecmwf",
-   "da": "2023-07-06",
-   "a": "2023-07-15",
-   "yb": "",
-   "area": "egeo",
-   "regata": "aegean6002023"
-  },
-  {
-   "cosa": "ascat",
-   "da": "2022-10-19",
-   "a": "2022-11-01",
-   "yb": "",
-   "area": "",
-   "regata": "rmsr2022"
-  },
-  {
-   "cosa": "ascat",
-   "da": "2022-08-16",
-   "a": "2022-08-25",
-   "yb": "",
-   "area": "",
-   "regata": "pm2022"
+   "cosa": "ybprova",
+   "da": "2025-01-05",
+   "a": "2025-01-05",
+   "yb": "loropiana2016,loropiana16,loropianagiraglia2016,loropianagiraglia16,giragliaoropiana2016,rolexgiraglia16,giragliarolex2016,giragliarolexcup2016,rgc2016,lpg2016,giraglia16rolex,loropiana2017,loropiana17,loropianagiraglia2017,loropianagiraglia17,giragliaoropiana2017,rolexgiraglia17,giragliarolex2017,giragliarolexcup2017,rgc2017,lpg2017,giraglia17rolex,loropiana2018,loropiana18,loropianagiraglia2018,loropianagiraglia18,giragliaoropiana2018,rolexgiraglia18,giragliarolex2018,giragliarolexcup2018,rgc2018,lpg2018,giraglia18rolex,loropiana2019,loropiana19,loropianagiraglia2019,loropianagiraglia19,giragliaoropiana2019,rolexgiraglia19,giragliarolex2019,giragliarolexcup2019,rgc2019,lpg2019,giraglia19rolex,loropiana2020,loropiana20,loropianagiraglia2020,loropianagiraglia20,giragliaoropiana2020,rolexgiraglia20,giragliarolex2020,giragliarolexcup2020,rgc2020,lpg2020,giraglia20rolex,loropiana2021,loropiana21,loropianagiraglia2021,loropianagiraglia21,giragliaoropiana2021,rolexgiraglia21,giragliarolex2021,giragliarolexcup2021,rgc2021,lpg2021,giraglia21rolex,loropiana2022,loropiana22,loropianagiraglia2022,loropianagiraglia22,giragliaoropiana2022,rolexgiraglia22,giragliarolex2022,giragliarolexcup2022,rgc2022,lpg2022,giraglia22rolex,loropiana2023,loropiana23,loropianagiraglia2023,loropianagiraglia23,giragliaoropiana2023,rolexgiraglia23,giragliarolex2023,giragliarolexcup2023,rgc2023,lpg2023,giraglia23rolex,loropiana2024,loropiana24,loropianagiraglia2024,loropianagiraglia24,giragliaoropiana2024,rolexgiraglia24,giragliarolex2024,giragliarolexcup2024,rgc2024,lpg2024,giraglia24rolex,loropiana2025,loropiana25,loropianagiraglia2025,loropianagiraglia25,giragliaoropiana2025,rolexgiraglia25,giragliarolex2025,giragliarolexcup2025,rgc2025,lpg2025,giraglia25rolex,loropiana2026,loropiana26,loropianagiraglia2026,loropianagiraglia26,giragliaoropiana2026,rolexgiraglia26,giragliarolex2026,giragliarolexcup2026,rgc2026,lpg2026,giraglia26rolex,loropiana,loropianagiraglia,giraglia,rolexgiraglia,giragliarolexcup",
+   "area": ""
   }
  ]
 }
